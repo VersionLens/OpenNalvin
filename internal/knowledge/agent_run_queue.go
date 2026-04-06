@@ -283,6 +283,128 @@ func (s *Store) UpdateAgentRunTurn(ctx context.Context, input UpdateAgentRunTurn
 	return nil
 }
 
+// DeleteMessagesFromUserIndex removes the Nth user message (0-indexed) and
+// everything after it from the run's trace, and deletes the corresponding
+// turns.  This mirrors Golem's deleteMessageAndFollowing(index) semantics.
+func (s *Store) DeleteMessagesFromUserIndex(ctx context.Context, runID string, userMessageIndex int) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if userMessageIndex < 0 {
+		return fmt.Errorf("user message index must be non-negative")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete messages tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// Truncate the trace JSON: remove messages from the Nth user message onwards.
+	var traceJSON string
+	if err = tx.QueryRowContext(ctx, `SELECT trace FROM agent_runs WHERE id = ?`, runID).Scan(&traceJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read trace: %w", err)
+	}
+
+	truncatedTrace, err := truncateTraceAtUserMessage([]byte(traceJSON), userMessageIndex)
+	if err != nil {
+		return fmt.Errorf("truncate trace: %w", err)
+	}
+
+	// Delete the Nth turn (by created_at order) and all following turns.
+	// First get the turn_id at that index.
+	var turnID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT turn_id FROM agent_run_turns
+		WHERE run_id = ?
+		ORDER BY created_at ASC
+		LIMIT 1 OFFSET ?`,
+		runID, userMessageIndex,
+	).Scan(&turnID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("find turn at index: %w", err)
+	}
+
+	if turnID != "" {
+		// Get the turn's created_at to delete it and all following.
+		var createdAt string
+		if err = tx.QueryRowContext(ctx, `SELECT created_at FROM agent_run_turns WHERE turn_id = ?`, turnID).Scan(&createdAt); err != nil {
+			return fmt.Errorf("get turn created_at: %w", err)
+		}
+		// CASCADE on agent_run_events handles event cleanup.
+		if _, err = tx.ExecContext(ctx, `
+			DELETE FROM agent_run_turns
+			WHERE run_id = ? AND created_at >= ?`,
+			runID, createdAt,
+		); err != nil {
+			return fmt.Errorf("delete turns: %w", err)
+		}
+	}
+
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE agent_runs
+		SET trace = ?, active_turn_id = '', status = CASE WHEN status = 'running' THEN 'aborted' ELSE status END, updated_at = ?
+		WHERE id = ?`,
+		string(truncatedTrace), nowString(), runID,
+	); err != nil {
+		return fmt.Errorf("update run trace: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// truncateTraceAtUserMessage removes the Nth user message (0-indexed) and everything after it from the trace.
+func truncateTraceAtUserMessage(traceJSON []byte, userMessageIndex int) ([]byte, error) {
+	var trace map[string]json.RawMessage
+	if err := json.Unmarshal(traceJSON, &trace); err != nil {
+		return nil, fmt.Errorf("unmarshal trace: %w", err)
+	}
+
+	messagesRaw, ok := trace["messages"]
+	if !ok {
+		return traceJSON, nil
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return nil, fmt.Errorf("unmarshal messages: %w", err)
+	}
+
+	// Find the position of the Nth user message and truncate from there.
+	userCount := 0
+	cutIndex := len(messages)
+	for i, msg := range messages {
+		var partial struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(msg, &partial); err != nil {
+			continue
+		}
+		if partial.Role == "user" {
+			if userCount == userMessageIndex {
+				cutIndex = i
+				break
+			}
+			userCount++
+		}
+	}
+
+	messages = messages[:cutIndex]
+	newMessagesJSON, err := json.Marshal(messages)
+	if err != nil {
+		return nil, fmt.Errorf("marshal truncated messages: %w", err)
+	}
+	trace["messages"] = newMessagesJSON
+
+	return json.Marshal(trace)
+}
+
 func (s *Store) CreateAgentRunEvent(ctx context.Context, input CreateAgentRunEventInput) (*AgentRunEvent, error) {
 	if strings.TrimSpace(input.RunID) == "" {
 		return nil, fmt.Errorf("agent run event run id is required")

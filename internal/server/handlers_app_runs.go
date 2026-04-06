@@ -400,6 +400,34 @@ func (s *Server) handleAbortAppRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusAccepted, map[string]any{"run": run})
 }
 
+func (s *Server) handleDeleteAgentRunTurnAndFollowing(w http.ResponseWriter, r *http.Request) {
+	handle, err := s.runtime.currentHandle(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	store := handle.store
+	runID := chi.URLParam(r, "runID")
+	turnID := chi.URLParam(r, "turnID")
+
+	if err := store.DeleteAgentRunTurnAndFollowing(r.Context(), runID, turnID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, knowledge.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		s.writeError(w, status, err.Error())
+		return
+	}
+
+	run, err := store.GetAgentRun(r.Context(), runID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	enrichAgentRun(run)
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"run": run})
+}
+
 func parseAfterEventID(r *http.Request) (int64, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get("after_event_id"))
 	if raw == "" {
