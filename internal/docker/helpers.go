@@ -698,6 +698,13 @@ func (r *Runner) createContainerEnv(extra map[string]string) ([]string, []BindMo
 	}
 	env["GIT_SSH_COMMAND"] = gitpkg.DefaultClientSSHCommand(containerGitKeyPath, containerKnownHostsPath)
 
+	// Default host binding for dev servers — many frameworks (Vite, Nuxt,
+	// Next.js, etc.) respect HOST or HOSTNAME and default to 127.0.0.1
+	// which is unreachable from outside the container.  Setting these
+	// before the extra-env merge lets callers override if needed.
+	env["HOST"] = "0.0.0.0"
+	env["HOSTNAME"] = "0.0.0.0"
+
 	for key, value := range extra {
 		key = strings.TrimSpace(key)
 		if key == "" {
