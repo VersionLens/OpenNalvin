@@ -1,0 +1,149 @@
+app:
+  env: development
+providers:
+  default:
+    base_url: ""
+    api_key: ""
+    model: ""
+    tool_output_token_limit: 4000
+server:
+  addr: "0.0.0.0:4210"
+  allowed_origins:
+    - http://localhost:4211
+    - http://127.0.0.1:4211
+discord:
+  enabled: false
+  token: ""
+  application_id: ""
+  public_url: ""
+  guild_allowlist: []
+  status_message: ""
+docker:
+  host: ""
+  binary: ""
+  default_image: "nalvin/dev"
+git:
+  repo_root: "~/.nalvin/git-repos"
+  ssh:
+    enabled: true
+    addr: "127.0.0.1:4222"
+    host_key_path: "~/.nalvin/git/ssh_host_ed25519"
+  binaries:
+    git: ""
+    upload_pack: ""
+    receive_pack: ""
+  default_client:
+    user: "nalvin"
+    private_key_path: "~/.nalvin/git/id_nalvin"
+    host: "127.0.0.1"
+    author_name: ""
+    author_email: ""
+  repo_defaults:
+    public_read: true
+    default_writers: []
+  users: {}
+  repos: {}
+workspace:
+  db_root: "~/.nalvin/workspace-db"
+  files_root: "~/.nalvin/workspaces"
+  current: "default"
+work:
+  hello_workers: 2
+  scheduler_workers: 1
+  agent_workers: 1
+  agent_job_timeout: 30m
+schedule:
+  enabled: true
+  hello_cron: "*/5 * * * *"
+rss:
+  feeds:
+    ai:
+      - {name: openai-blog, url: "https://openai.com/blog/rss.xml"}
+      - {name: deepmind-blog, url: "https://deepmind.google/blog/rss.xml"}
+      - {name: huggingface-blog, url: "https://huggingface.co/blog/feed.xml"}
+      - {name: ars-ai, url: "https://arstechnica.com/ai/feed/"}
+      - {name: the-verge-ai, url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"}
+      - {name: ai-news, url: "https://buttondown.com/ainews/rss"}
+    tech:
+      - {name: ars-technica, url: "https://feeds.arstechnica.com/arstechnica/index"}
+      - {name: the-verge, url: "https://www.theverge.com/rss/index.xml"}
+      - {name: hacker-news, url: "https://hnrss.org/frontpage"}
+      - {name: techcrunch, url: "https://techcrunch.com/feed/"}
+      - {name: wired, url: "https://www.wired.com/feed/rss"}
+      - {name: lobsters, url: "https://lobste.rs/rss"}
+    politics:
+      - {name: politico, url: "https://www.politico.com/rss/politicopicks.xml"}
+      - {name: the-hill, url: "https://thehill.com/feed/"}
+      - {name: bbc-world, url: "https://feeds.bbci.co.uk/news/world/rss.xml"}
+      - {name: aljazeera, url: "https://aljazeera.com/xml/rss/all.xml"}
+      - {name: guardian-world, url: "https://www.theguardian.com/world/rss"}
+      - {name: nyt-world, url: "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"}
+    analysis:
+      - {name: foreign-policy, url: "https://foreignpolicy.com/feed/"}
+      - {name: foreign-affairs, url: "https://www.foreignaffairs.com/rss.xml"}
+      - {name: the-diplomat, url: "https://thediplomat.com/feed/"}
+      - {name: war-on-rocks, url: "https://warontherocks.com/feed/"}
+      - {name: atlantic-council, url: "https://www.atlanticcouncil.org/feed/"}
+      - {name: defense-one, url: "https://www.defenseone.com/rss/all"}
+    commentary:
+      - {name: stratechery, url: "https://stratechery.com/feed/"}
+      - {name: marginal-revolution, url: "https://marginalrevolution.com/feed"}
+      - {name: matt-levine, url: "https://www.bloomberg.com/opinion/authors/ARbTQlRLRjE/matthew-s-levine.rss"}
+      - {name: bellingcat, url: "https://www.bellingcat.com/feed/"}
+      - {name: naked-capitalism, url: "https://www.nakedcapitalism.com/feed"}
+      - {name: the-intercept, url: "https://theintercept.com/feed/?rss"}
+reddit:
+  base_url: https://www.reddit.com
+  subreddits:
+    tech: [technology, tech, hardware, Futurology]
+    ai: [MachineLearning, LocalLLaMA, StableDiffusion, artificial]
+    politics: [politics, geopolitics, TrueReddit]
+    world: [worldnews, news, europe, africa, anime_titties]
+    cyber: [netsec, cybersecurity]
+    finance: [finance, economics, investing]
+slack:
+  user_token: ""
+agent:
+  subagents:
+    provider_name: ""
+  tools:
+    default_enabled: []
+    default_disabled: []
+    default_pinned:
+      - mcp__exa__web_search_exa
+      - search_tools
+    metadata:
+      mcp__exa__web_search_exa:
+        keywords:
+          - web search
+          - search web
+          - internet search
+  tool_output:
+    max_stored_bytes: 4194304
+    default_page_lines: 200
+    grep_default_limit: 100
+  mcp_servers:
+    deepwiki:
+      transport: streamable_http
+      url: https://mcp.deepwiki.com/mcp
+      enabled_by_default: true
+    exa:
+      transport: streamable_http
+      url: https://mcp.exa.ai/mcp
+      enabled_by_default: true
+    github:
+      transport: streamable_http
+      url: https://api.githubcopilot.com/mcp/
+      enabled_by_default: false
+    linear:
+      transport: streamable_http
+      url: https://mcp.linear.app/mcp
+      oauth:
+        callback_port: 9877
+      enabled_by_default: false
+    sentry:
+      transport: streamable_http
+      url: https://mcp.sentry.dev/mcp
+      oauth:
+        callback_port: 9878
+      enabled_by_default: false
