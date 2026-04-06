@@ -34,7 +34,6 @@ HOW TO WORK
 
 EXAMPLE WORKFLOW
 User: "Create files a.txt and b.txt, then use shell to combine them into c.txt"
-Good:
   todowrite → [{content: "Create files", status: "in_progress"}, {content: "Combine with shell", status: "pending"}]
   search_tools("file write") → reveals write
   search_tools("shell") → reveals shell
@@ -560,9 +559,18 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		if !hasPending {
 			break
 		}
-		session.debugf("todo-continuation retry=%d: found incomplete todos, nudging model to continue", todoRetry+1)
+		// Build a specific nudge that names the next pending item.
+		var nextItem string
+		for _, item := range todos {
+			if item.Status == "in_progress" || item.Status == "pending" {
+				nextItem = item.Content
+				break
+			}
+		}
+		nudge := fmt.Sprintf("You stopped before finishing. Your next incomplete todo is: %q. Use search_tools to find any tools you need, then do the work. Do not call todoread — act now.", nextItem)
+		session.debugf("todo-continuation retry=%d: nudging with %q", todoRetry+1, nextItem)
 		builder.FlushAssistant()
-		builder.AddUserMessage("You have incomplete todo items. Continue working on the remaining steps. Do not stop until all items are completed.")
+		builder.AddUserMessage(nudge)
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
 		builder.trace.Todos = runtime.todoState()

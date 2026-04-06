@@ -82,7 +82,7 @@ nalvin --workspace myproject agent run --provider claude -p "Summarize all files
 Local models vary widely in tool-calling reliability. nalvin includes several features that help smaller models succeed at multi-step tasks:
 
 - **Tool discovery via `search_tools`** keeps the visible tool set small, reducing prompt size and model confusion. Only a handful of tools are pinned (visible from the start); the rest are discovered on demand.
-- **Todo-based continuation** — when the model creates a todo list with `todowrite` but stops before completing all items, the runtime automatically nudges it to continue (up to 5 retries). This compensates for local models that emit premature stop tokens mid-task.
+- **Todo-based continuation** — when the model creates a todo list with `todowrite` but stops before completing all items, the runtime automatically nudges it to continue (up to 5 retries). Each nudge names the specific incomplete todo item and instructs the model to act immediately. This compensates for local models that emit premature stop tokens mid-task.
 - **System prompt tuning** — the base system prompt includes a numbered workflow (`todowrite` → `search_tools` → do work → update todos) and a concrete example, both designed to guide smaller models through multi-step tasks.
 
 For model-specific setup guides, see:

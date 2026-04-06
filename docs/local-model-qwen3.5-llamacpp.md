@@ -89,16 +89,20 @@ Contributing factors:
 
 nalvin mitigates premature stopping with a todo-continuation mechanism. When the model creates a todo list via `todowrite` but the agent loop ends with pending or in-progress items, the runtime automatically:
 
-1. Injects a user message: "You have incomplete todo items. Continue working on the remaining steps."
-2. Re-invokes the model with the full conversation history
-3. Repeats up to 5 times
+1. Identifies the next incomplete todo item
+2. Injects a targeted user message: *"You stopped before finishing. Your next incomplete todo is: \<item\>. Use search_tools to find any tools you need, then do the work. Do not call todoread — act now."*
+3. Re-invokes the model with the full conversation history
+4. Repeats up to 5 times
+
+The nudge message is deliberately specific — it names the exact pending task and tells the model to act rather than read. Earlier iterations with generic nudges ("continue working") caused the model to loop on `todoread` without making progress.
 
 This significantly improves task completion rates for local models:
 
 | Workflow | Without retries | With retries |
 |----------|----------------|-------------|
-| Create 3 files + shell loop | ~33% | ~67% |
+| Create 3 files + shell loop | ~33% | ~50% |
 | News research + digest | Rarely completes | Completes reliably |
+| Sub-agent parallel research | Rarely completes | Completes with 2-3 nudges |
 
 The mechanism only triggers when the model has actually called `todowrite` — if the model stops before creating any todos, no retry occurs. This is why the system prompt strongly encourages calling `todowrite` as the first action for multi-step tasks.
 
@@ -113,8 +117,9 @@ Based on testing with Qwen3.5-35B-A3B (MoE, Q4_K_XL quantization):
 | Single tool discovery + use | "Create a file" | High (~90%) |
 | Multi-tool discovery + sequential use | "Create a KB node, then list nodes" | High (~85%) |
 | Multi-tool with web fetch + synthesis | "Fetch Wikipedia article, write summary" | High (~80%) |
-| Multi-phase with shell composition | "Create files, then shell loop to build index" | Medium (~67% with retries) |
+| Multi-phase with shell composition | "Create files, then shell loop to build index" | Medium (~50% with retries) |
 | Multi-source research + write | "Collect news from 2 categories, write digest" | Medium-High (~75% with retries) |
+| Sub-agent orchestration | "Spawn 2 children to collect news, synthesize" | Medium (~50% with retries) |
 
 ## Tuning tips
 
