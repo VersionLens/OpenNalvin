@@ -1,0 +1,25 @@
+export EDITOR=vim
+export VISUAL=vim
+
+HISTFILE="${HOME}/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+
+setopt appendhistory
+setopt hist_ignore_dups
+setopt hist_ignore_space
+setopt interactive_comments
+setopt no_beep
+
+mkdir -p "${XDG_CACHE_HOME:-${HOME}/.cache}/zsh"
+autoload -Uz compinit
+compinit -d "${XDG_CACHE_HOME:-${HOME}/.cache}/zsh/.zcompdump"
+
+bindkey -e
+bindkey '^[[A' up-line-or-history
+bindkey '^[[B' down-line-or-history
+bindkey '^[[C' forward-char
+bindkey '^[[D' backward-char
+bindkey '^I' expand-or-complete
+
+PROMPT='%n@%m:%~ %# '

@@ -1,0 +1,7 @@
+# Keep interactive SSH sessions usable even when the client terminal
+# reports TERM=dumb.
+if [[ -t 0 && -t 1 && ( -z "${TERM:-}" || "${TERM}" == "dumb" ) ]]; then
+  export TERM=xterm-256color
+fi
+
+export SHELL=/bin/zsh

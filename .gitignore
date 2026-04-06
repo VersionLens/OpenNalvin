@@ -1,0 +1,15 @@
+.DS_Store
+tmp/
+node_modules/
+web/node_modules/
+web/dist/index.html
+web/dist/assets/
+coverage/
+nalvin
+nalvin
+third_party/anacrolix-torrent/**/testdata/
+third_party/anacrolix-torrent/.github/
+third_party/anacrolix-torrent/.circleci/
+third_party/anacrolix-torrent/.deepsource.toml
+third_party/anacrolix-torrent/.gitignore
+third_party/anacrolix-torrent/.golangci.yml

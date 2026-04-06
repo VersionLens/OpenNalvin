@@ -1,0 +1,25 @@
+{
+  "name": "nalvin",
+  "private": true,
+  "packageManager": "bun@1.3.11",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"bun run dev:api\" \"bun run dev:web\"",
+    "dev:api": "air",
+    "dev:discord": "air -c .air.discord.toml",
+    "run:api": "go run . serve",
+    "run:discord": "go run . discord",
+    "cli": "go run .",
+    "dev:web": "bun run --cwd web dev",
+    "build:api": "go build -o nalvin .",
+    "build:web": "bun run --cwd web build",
+    "test:go": "go test ./...",
+    "typecheck:web": "bun run --cwd web typecheck",
+    "test:web": "bun run --cwd web test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
