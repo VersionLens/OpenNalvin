@@ -1,291 +1,510 @@
 # nalvin
 
-A fresh Go + web foundation for the next iteration of `nalvin`.
+An open-source agent harness built in Go. It gives any OpenAI-compatible model a rich tool environment — file I/O, Docker containers, Git repos, a knowledge base, web fetching, sub-agents — and manages the long-running conversation problems (context overflow, giant tool results) so you can focus on what the agent should do, not on keeping it alive.
 
-## Stack
+Built on [charm.land/fantasy](https://charm.land), the Charm CLI model-interaction library.
 
-- Go 1.26
-- Cobra + Viper
-- Chi HTTP server
-- Bun + Vite + React 19 + TypeScript
-- shadcn/ui + Tailwind CSS 4
-- Zustand
+## Why nalvin
 
-## Layout
+Most agent harnesses give the model a `run_shell` tool and hope for the best. nalvin takes a different approach:
 
-```text
-.
-├── docs/                Project documentation
-├── cmd/                 Cobra commands
-├── internal/            App internals (config, server, build info)
-├── web/                 Bun/Vite frontend plus Go embed package
-├── .air.toml            Go hot-reload config
-├── main.go              CLI entrypoint
-└── package.json         Root Bun scripts
-```
+- **No host shell execution.** The agent cannot run arbitrary commands on your machine. All command execution happens inside Docker containers via `docker exec`. This is fundamentally safer than harnesses that hand the model a shell on the host.
+- **Programmatic tool calling via a cross-platform shell.** Instead of host exec, nalvin provides a POSIX shell environment where every agent tool is a command. The shell is powered by [mvdan/sh](https://github.com/mvdan/sh), a pure-Go POSIX interpreter — it works identically on macOS, Linux, and Windows with no system shell dependency. Tools become composable: `glob --pattern "*.go" | jq -r '.paths[]' | head -20`.
+- **Tool search, not tool dumps.** Rather than sending dozens of tool definitions to the model on every turn, nalvin keeps most tools hidden and provides a `search_tools` command backed by FTS5. The model discovers tools by describing what it needs. This keeps prompt size small and scales to large tool catalogs.
+- **Tool output spillover.** When a tool returns a huge result (a large file, a long web page), the runtime stores the full output in SQLite and sends the model a compact summary with an `output_id`. The model can then page through or grep the stored output on demand, without blowing up context.
+- **Conversation compaction.** Long runs are automatically summarized when they approach the context window limit. The runtime summarizes older messages into a structured checkpoint, preserving references to spilled tool outputs, and keeps recent turns intact. Compaction is incremental — each round folds into the previous checkpoint.
+- **Multiple local workspaces.** Each workspace is a directory plus a SQLite database. The database stores agent runs, a knowledge graph (nodes + edges with FTS and embedding columns ready for vector search / reciprocal rank fusion), scheduler state, and tool output history. Switch between workspaces with a flag.
+- **First-class sub-agents.** Inspired by [codex-rs](https://github.com/openai/codex), nalvin supports spawning child agents with independent conversation histories and tool selections. The parent communicates through `spawn_agent`, `send_input`, `wait_agent`, and `close_agent`. Children are persisted as linked run records and can use a different provider than the parent.
+- **Custom tools via embedded Go interpreter.** Drop a `.go` file in `~/.nalvin/custom-tools/` and it becomes a tool. Files are compiled at runtime by the embedded [Scriggo](https://scriggo.com) interpreter. Custom tools can call any other tool via `tool.CallTool()`, appear in `search_tools`, and work in the shell — no rebuild required.
 
-## Getting Started
+## Quick Start
 
-Install backend and frontend dependencies:
+### Prerequisites
+
+- Go 1.26+
+- [Bun](https://bun.sh) (for the web frontend and dev scripts)
+- Docker (optional, for container tools)
+
+### Install
 
 ```bash
+git clone https://github.com/versionlens/OpenNalvin.git
+cd OpenNalvin
 go mod tidy
 bun install
 ```
 
-For the Go hot-reload loop, install Air once:
+### Configure a provider
 
-```bash
-go install github.com/air-verse/air@latest
-```
-
-## Development
-
-Start the API server with live reload:
-
-```bash
-bun run dev:api
-```
-
-Start the API server once without Air:
-
-```bash
-bun run run:api
-```
-
-Start the web app:
-
-```bash
-bun run dev:web
-```
-
-Or run both together:
-
-```bash
-bun run dev
-```
-
-Run CLI commands:
-
-```bash
-bun run cli -- kb nodes list --json
-bun run cli -- jobs enqueue hello --message "hi"
-```
-
-The Go server binds to `0.0.0.0:4210` by default. The Vite dev server binds to `0.0.0.0:4211` and proxies `/api` requests to Go, so you can connect via your machine hostname such as `http://<hostname>:4210`.
-
-## SQLite Features
-
-The repo ships a local `go-sqlite3` replacement with FTS5 enabled by default, so plain `go test ./...`, `go run . serve`, and `go build` all use the same SQLite feature set without extra build tags.
-
-## Configuration
-
-The CLI loads configuration in this order:
-
-1. baked defaults
-2. optional `.env`
-3. optional `~/.nalvin/config.yaml`
-4. `NALVIN_` environment variables
-5. CLI flags
-
-Primary config keys:
-
-- `providers.default.base_url`
-- `providers.default.api_key`
-- `providers.default.model`
-- `docker.host`
-- `docker.binary`
-- `docker.default_image`
-- `git.repo_root`
-- `git.ssh.enabled`
-- `git.ssh.addr`
-- `git.ssh.host_key_path`
-- `git.default_client.user`
-- `git.default_client.private_key_path`
-- `agent.subagents.provider_name`
-- `app.env`
-- `server.addr`
-- `server.allowed_origins`
-- `workspace.db_root`
-- `workspace.files_root`
-- `workspace.current`
-- `work.agent_job_timeout`
-
-Workspace state lives under `~/.nalvin` by default:
-
-- SQLite DBs: `~/.nalvin/workspace-db/<name>.sqlite`
-- Workspace files: `~/.nalvin/workspaces/<name>/`
-- Managed bare Git repos: `~/.nalvin/git-repos/<name>.git`
-- Git SSH host and client keys: `~/.nalvin/git/`
-
-Useful workspace commands:
-
-```bash
-bun run cli -- workspace list
-bun run cli -- workspace create alpha
-bun run cli -- workspace switch alpha
-bun run cli -- --workspace alpha workspace put ./notes.md docs/notes.md
-bun run cli -- --workspace alpha workspace get docs/notes.md ./notes-copy.md
-bun run cli -- --workspace alpha kb nodes list --json
-```
-
-## Embedded Git
-
-`nalvin` can run an embedded Git SSH server alongside the normal HTTP server. By default:
-
-- HTTP listens on `0.0.0.0:4210`
-- Git SSH listens on `127.0.0.1:4222`
-- managed bare repos live under `~/.nalvin/git-repos`
-- a local default Git client identity uses the `nalvin` SSH user and `~/.nalvin/git/id_nalvin`
-
-Start the server:
-
-```bash
-bun run cli -- serve
-```
-
-You should see logs similar to:
-
-```text
-time=... level=INFO msg="git ssh service listening" addr=127.0.0.1:4222 repo_root=/Users/you/.nalvin/git-repos
-time=... level=INFO msg="server listening" addr=0.0.0.0:4210 workspace=default
-```
-
-Manage global bare repos and workspace checkouts with the CLI:
-
-```bash
-bun run cli -- git repo list
-bun run cli -- git repo create demo
-bun run cli -- git repo tree demo
-bun run cli -- git repo commits demo
-bun run cli -- --workspace alpha git checkout demo
-bun run cli -- --workspace alpha git status --repo-path demo
-bun run cli -- --workspace alpha git add --repo-path demo hello.txt
-bun run cli -- --workspace alpha git commit --repo-path demo -m "initial commit"
-bun run cli -- --workspace alpha git push --repo-path demo
-```
-
-Agent runs can also discover and use the hidden Git tool family via `search_tools`:
-
-- `git`
-- `git_list_repos`
-- `git_create_repo`
-- `git_delete_repo`
-- `git_repo_tree`
-- `git_repo_commits`
-
-See the dedicated Git doc for server behavior, config, and tool examples.
-
-## Docker Client
-
-`nalvin` also exposes a Docker client surface for local container workflows. By default:
-
-- it uses the local Docker client's current-context behavior unless `docker.host` or `--host` overrides it
-- new containers default to image `nalvin/dev`
-- created containers automatically receive nalvin-managed Git credentials
-- created containers automatically get Docker-aware access to loopback-hosted nalvin Git remotes, so mounted repos can push without manual remote rewriting
-- `--mount-workspace` mounts the active workspace root at `/workspace`
-- `--ports` publishes container ports to the host (ports cannot be added after creation)
-
-Useful CLI examples:
-
-```bash
-bun run cli -- docker images list
-bun run cli -- docker build app --tag my-app:dev
-bun run cli -- docker create --name ws-worker --mount-workspace --image my-app:dev --ports 5173:5173 --ports 8000:8000
-bun run cli -- docker start ws-worker
-bun run cli -- docker exec ws-worker -- sh -lc "cd /workspace && git status"
-bun run cli -- docker exec ws-worker -- sh -lc "cd /workspace/repo && git pull && git push"
-```
-
-Agent runs can discover the hidden Docker tool family through `search_tools`:
-
-- `docker` — scoped Docker CLI
-- `docker_list_containers`, `docker_list_images`, `docker_list_networks`, `docker_list_volumes` — resource listing
-- `docker_pull_image`, `docker_build_image` — image management
-- `docker_create_container` — create with workspace mounts, ports, volumes, env, and Git credentials
-- `docker_start_container`, `docker_stop_container`, `docker_remove_container` — container lifecycle
-- `docker_exec_foreground` — run a command and wait for output
-- `docker_exec_background` — start a long-running process (dev server, watcher) and return immediately
-- `docker_exec_tail` — read recent output from a background process
-- `docker_exec_signal` — send TERM/KILL to a background process
-- `docker_exec_list_processes` — list managed background processes
-
-Background process state is tracked inside the container under `/tmp/nalvin-procs/` using PID files and log files. Dev servers must bind to `0.0.0.0` (not localhost) for published ports to be reachable from the host.
-
-See [Docker client and tools](docs/docker-client-and-tools.md) for the full reference.
-
-Basic remote agent run:
+Create `~/.nalvin/config.yaml` with one or more providers. The `default` provider is used unless you specify `--provider <name>`:
 
 ```yaml
-# ~/.nalvin/config.yaml
 providers:
   default:
     type: openai
     api_key: ${OPENAI_API_KEY}
+    model: gpt-5.4
+    context_window_tokens: 128000
+
+  claude:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-sonnet-4-6
+    context_window_tokens: 200000
+```
+
+Three provider types are supported:
+
+| Type | Description |
+|------|-------------|
+| `openai` | OpenAI API (default if `type` is omitted and no `base_url` is set) |
+| `anthropic` | Anthropic API |
+| `openai_compat` | Any OpenAI-compatible API (requires `base_url`) |
+
+For local servers like LM Studio, Ollama, or vLLM:
+
+```yaml
+providers:
+  local:
+    base_url: http://localhost:1234/v1
+    model: local-model
+    context_window_tokens: 32000
+```
+
+Use a specific provider for a run:
+
+```bash
+nalvin --workspace myproject agent run --provider claude -p "Summarize all files in the workspace"
+```
+
+### Create a workspace and run the agent
+
+The agent can only see files inside its workspace directory (`~/.nalvin/workspaces/<name>/`). It does not have access to your host filesystem, your current directory, or any path outside the workspace. To work with existing files, copy them into the workspace first.
+
+```bash
+# Create a workspace
+nalvin workspace create myproject
+
+# Copy files into it
+nalvin --workspace myproject workspace put ./my-notes.md notes.md
+
+# Run the agent
+nalvin --workspace myproject agent run -p "What tools do you have available? Use search_tools to find out."
+
+# Run with verbose output to see tool calls
+nalvin --workspace myproject agent run --verbose -p "List the files in the workspace and summarize them"
+```
+
+### See results in the web UI
+
+```bash
+# Start the API server and web frontend
+bun run dev
+
+# Or start them separately
+bun run dev:api   # Go API on :4210
+bun run dev:web   # Vite dev server on :4211, proxies /api to Go
+```
+
+Open `http://localhost:4211` to browse agent runs, inspect tool calls, view spilled outputs, and start new conversations.
+
+## Architecture
+
+### Tool System
+
+nalvin has a layered tool visibility model:
+
+| State | Meaning |
+|-------|---------|
+| **pinned** | Visible to the model from the first turn |
+| **hidden** | Enabled but invisible until discovered via `search_tools` |
+| **revealed** | Was hidden, now visible after a `search_tools` match |
+| **disabled** | Exists but cannot be used in this run |
+
+`search_tools` uses an in-memory FTS5 index over tool IDs, descriptions, keywords, and schema properties. Both concise keywords (`git`, `docker`) and natural-language queries (`fetch a URL`, `create a knowledge base node`) work.
+
+Default tool visibility:
+
+- **Pinned**: `search_tools`, multi-agent control tools
+- **Hidden** (discoverable): file tools (`view`, `edit`, `write`, `grep`, `glob`, `ls`), Git tools, Docker tools, news tools, `web_fetch_get`, knowledge base tools
+- **Special**: `view_tool_output` and `grep_tool_output` stay hidden until the first tool output spill in a run
+
+Override visibility per-run with flags:
+
+```bash
+nalvin agent run \
+  --enable-tool kb_create_node \
+  --pin-tool web_fetch_get \
+  --disable-tool news_rss_headlines \
+  -p "Summarize this URL and save it as a KB node"
+```
+
+Or set defaults in `config.yaml`:
+
+```yaml
+agent:
+  tools:
+    default_enabled:
+      - kb_create_node
+    default_pinned:
+      - web_fetch_get
+```
+
+### Shell Tool
+
+The `shell` tool gives the model a POSIX shell where every visible agent tool is a command:
+
+```bash
+# Tools output JSON; use jq to extract fields
+view --path main.go | jq -r '.content' | head -20
+
+# Compose tools with Unix utilities
+glob --pattern "**/*.go" | jq -r '.paths[]' | while read f; do
+  grep --pattern "TODO" --path "$f" | jq -r '.matches[]'
+done
+
+# Fetch JSON APIs
+web_fetch_get --url "https://api.example.com/data" | jq '.body_json.items[:5]'
+```
+
+Available Unix utilities: `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `tee`, `sed`, `xargs`, `fgrep`, `egrep`, `jq`, `mkdir`, `rm`, `cp`, `mv`, `touch`, `find`, `seq`, `date`, `tree`.
+
+Notably absent from PATH: `docker`, `curl`, `git`, `python`, `node`, `go`. These are replaced by the corresponding agent tools, keeping all I/O visible in the run trace.
+
+### Docker Execution (No Host Shell)
+
+Unlike most agent harnesses, nalvin does **not** give the model a shell on the host machine. Arbitrary command execution goes through Docker:
+
+```
+Model wants to run `npm install` →
+  uses search_tools to find docker tools →
+  docker_create_container (with workspace mount) →
+  docker_start_container →
+  docker_exec_foreground: sh -lc "cd /workspace && npm install"
+```
+
+This means:
+
+- The host filesystem is never directly exposed to model-chosen commands
+- Container state is isolated and disposable
+- Long-running processes (dev servers, watchers) use `docker_exec_background` with log tailing
+- Published ports make container services accessible from the host
+
+### Tool Output Spillover
+
+When a tool result exceeds the provider's token limit (default 4000 tokens):
+
+1. The full output is stored in the workspace SQLite database
+2. The model receives a compact summary with `output_id`, byte size, line count, and a preview
+3. `view_tool_output` and `grep_tool_output` are revealed so the model can page through or search the stored result
+
+This prevents a single large `view` or `web_fetch_get` from consuming the entire context window.
+
+### Conversation Compaction
+
+When total prompt size exceeds a configurable threshold (default 85% of the context window):
+
+1. The runtime selects a split point, keeping recent messages intact
+2. Older messages are summarized into a structured checkpoint (goal, decisions, completed work, open tasks, files touched, referenced tool outputs)
+3. The checkpoint is injected into the system prompt and the compacted messages are trimmed
+4. If the provider still rejects the prompt, aggressive compaction retries with fewer kept messages
+
+Compaction is incremental — each round folds new content into the existing checkpoint. Spilled tool output references survive compaction, so the model can still page through outputs from earlier in the run.
+
+### Workspaces
+
+The agent's file tools (`view`, `edit`, `write`, `grep`, `glob`, `ls`) are scoped to the active workspace directory under `~/.nalvin/workspaces/<name>/`. The agent cannot read or write files outside this directory. To bring external files in, use `nalvin workspace put`; to extract files, use `nalvin workspace get`.
+
+Each workspace is an isolated environment:
+
+```
+~/.nalvin/
+├── config.yaml
+├── workspace-db/
+│   ├── myproject.sqlite    # Runs, KB, tool outputs, scheduler
+│   └── another.sqlite
+├── workspaces/
+│   ├── myproject/          # Workspace file tree
+│   └── another/
+├── git-repos/              # Managed bare Git repos
+├── git/                    # SSH keys
+└── custom-tools/           # Custom .go tool files
+```
+
+The SQLite database per workspace stores:
+
+- **Agent runs**: full trace with messages, tool calls, timing, token counts
+- **Knowledge graph**: nodes and edges with FTS5 full-text search, plus `embedding BLOB` columns ready for vector similarity search and reciprocal rank fusion (RRF)
+- **Tool output history**: spilled outputs with pagination and grep support
+- **Scheduler state**: for recurring tasks
+
+### Sub-Agents
+
+Parent agents can spawn children for parallel or delegated work:
+
+```
+spawn_agent(name="researcher", message="Find the top 5 Go ORMs by GitHub stars",
+            enabled_tool_ids=["web_fetch_get", "search_tools"],
+            pinned_tool_ids=["web_fetch_get"])
+→ child runs with independent context, own tool set
+→ parent continues working
+→ wait_agent("researcher")
+→ get_agent_result("researcher")
+→ close_agent("researcher")
+```
+
+Children:
+
+- Get their own conversation history (no context pollution)
+- Can use a different provider (`agent.subagents.provider_name` in config)
+- Are persisted as linked run records (visible in the web UI)
+- Cannot spawn their own children (single level of nesting)
+
+### Custom Tools
+
+Drop a `.go` file in `~/.nalvin/custom-tools/`:
+
+```go
+package main
+
+import (
+    "tool"
+    "strings"
+)
+
+// tool:name reverse_string
+// tool:description Reverse a UTF-8 string.
+// tool:keywords reverse,flip,mirror
+
+type Input struct {
+    Text string `json:"text" description:"The string to reverse."`
+}
+
+func main() {
+    in := tool.GetInput()
+    text, _ := in["text"].(string)
+    runes := []rune(text)
+    for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+        runes[i], runes[j] = runes[j], runes[i]
+    }
+    tool.SetOutput(map[string]any{"reversed": string(runes)})
+}
+```
+
+Custom tools can call other tools (`tool.CallTool("view", ...)`), appear in `search_tools`, and work as shell commands. The Scriggo interpreter provides a safe subset of the Go stdlib — filesystem and network access is blocked, funneled through `tool.CallTool` so it stays in the audit trail.
+
+### News Tools
+
+nalvin ships with built-in RSS and Reddit tools for information gathering. All three are enabled but hidden — the agent discovers them via `search_tools`.
+
+**`news_rss_headlines`** fetches headlines from configured RSS feeds, organized by category. The default config includes curated feeds across several categories:
+
+| Category | Feeds |
+|----------|-------|
+| `ai` | OpenAI Blog, DeepMind, Hugging Face, Ars AI, The Verge AI, AI News |
+| `tech` | Ars Technica, The Verge, Hacker News, TechCrunch, Wired, Lobsters |
+| `politics` | Politico, The Hill, BBC World, Al Jazeera, Guardian, NYT World |
+| `analysis` | Foreign Policy, Foreign Affairs, The Diplomat, War on the Rocks, Defense One |
+| `commentary` | Stratechery, Marginal Revolution, Matt Levine, Bellingcat, The Intercept |
+
+**`news_reddit_top_posts`** fetches top posts from subreddit groups by category (`tech`, `ai`, `politics`, `world`, `cyber`, `finance`) with configurable time filters (hour/day/week/month/year/all).
+
+**`news_reddit_post_details`** fetches a full Reddit post body, linked URL, metadata, and nested comment tree from a permalink.
+
+Add your own feeds and subreddits in `config.yaml`:
+
+```yaml
+rss:
+  feeds:
+    my-category:
+      - {name: my-blog, url: "https://example.com/feed.xml"}
+
+reddit:
+  subreddits:
+    my-group: [subreddit1, subreddit2]
+```
+
+### MCP Server Integration
+
+nalvin connects to external [Model Context Protocol](https://modelcontextprotocol.io) servers, giving the agent access to third-party tool ecosystems. Two transports are supported: `streamable_http` for remote servers and `stdio` for local commands.
+
+The default config includes two free MCP servers (no API key required):
+
+- **Exa** (`mcp__exa__web_search_exa`) — web search, pinned by default
+- **DeepWiki** — GitHub/docs wiki lookup, discoverable via `search_tools`
+
+Add your own MCP servers in `config.yaml`:
+
+```yaml
+agent:
+  mcp_servers:
+    my-server:
+      transport: streamable_http
+      url: https://mcp.example.com/mcp
+      headers:
+        Authorization: Bearer ${MY_API_KEY}
+      enabled_by_default: true
+
+    local-tool:
+      transport: stdio
+      command: uvx
+      args: [my-mcp-server]
+      enabled_by_default: true
+```
+
+MCP tool IDs follow the pattern `mcp__<server>__<tool>`. Each agent run creates a fresh MCP session — sessions are not shared across concurrent runs.
+
+### Inference Queue
+
+Agent runs can execute inline or through a persistent job queue backed by [River](https://riverqueue.com) (with SQLite). The queue enables:
+
+- **Decoupled execution** — the CLI or web UI submits a turn; a background worker picks it up
+- **Configurable concurrency** — set `work.agent_workers` to control how many agent runs execute in parallel
+- **Job timeout** — `work.agent_job_timeout` (default 30m) prevents runaway runs
+- **Turn-based architecture** — each user message is a "turn" that gets enqueued independently, so multi-turn conversations flow through the same queue
+
+```bash
+# Run inline (default — blocks until done)
+nalvin --workspace myproject agent run -p "Hello"
+
+# Run through the queue (returns immediately, streams events)
+nalvin --workspace myproject agent run --queue -p "Hello"
+
+# Measure queue latency and time-to-first-token
+nalvin --workspace myproject agent run --queue --timing -p "Hello"
+```
+
+The `--queue` flag submits the run through a River worker. If no external worker is running, the CLI starts a temporary in-process worker automatically. The web UI always uses the queue path.
+
+Configure workers in `config.yaml`:
+
+```yaml
+work:
+  agent_workers: 1        # concurrent agent runs
+  agent_job_timeout: 30m  # per-run timeout
+```
+
+When the server is running (`nalvin serve`), the worker pool processes queued runs. The web UI streams run events via SSE in real time.
+
+## Configuration Reference
+
+The CLI loads config in this order (later wins):
+
+1. Built-in defaults
+2. Optional `.env` file
+3. `~/.nalvin/config.yaml`
+4. `NALVIN_` environment variables
+5. CLI flags
+
+A more complete config example:
+
+```yaml
+providers:
+  default:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-sonnet-4-6
+    context_window_tokens: 200000
+    tool_output_token_limit: 4000
+
+  openai:
+    type: openai
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-5.4
+    context_window_tokens: 128000
+
+  fast:
+    type: openai
+    api_key: ${OPENAI_API_KEY}
     model: gpt-5.4-mini
+    context_window_tokens: 128000
 
 agent:
   subagents:
-    provider_name: kimi
+    provider_name: fast
+
+  compaction:
+    enabled: true
+    trigger_pct: 85
+    keep_recent_messages: 8
+
+  tools:
+    default_enabled:
+      - kb_create_node
+      - kb_update_node
+    default_pinned:
+      - web_fetch_get
+
+  custom_tools:
+    dir: ~/.nalvin/custom-tools
+    enabled: true
+    timeout_seconds: 30
+
+  mcp_servers:
+    exa:
+      transport: streamable_http
+      url: https://mcp.exa.ai/mcp
+      enabled_by_default: true
 ```
 
-Provider management helpers:
+## CLI Reference
 
 ```bash
-bun run cli -- provider list
-bun run cli -- provider add lmstudio --base-url http://localhost:1234/v1 --model local-model
-bun run cli -- provider add openai --type openai --model gpt-5.4
+# Workspace management
+nalvin workspace create <name>
+nalvin workspace list
+nalvin workspace switch <name>
+
+# Agent runs
+nalvin --workspace <ws> agent run -p "prompt"
+nalvin --workspace <ws> agent run --provider fast -p "prompt"
+nalvin --workspace <ws> agent run --resume <run-id> -p "follow-up"
+nalvin --workspace <ws> agent run --mode plan -p "plan the refactor"
+nalvin --workspace <ws> agent run --verbose --timing -p "prompt"
+
+# Tool inspection
+nalvin --workspace <ws> agent tools list
+nalvin --workspace <ws> agent tools list --json
+nalvin --workspace <ws> agent tools run <tool-id> --flag value
+
+# Provider management
+nalvin provider list
+nalvin provider add lmstudio --base-url http://localhost:1234/v1 --model local-model
+
+# Interactive REPL
+nalvin --workspace <ws> agent repl
+
+# Knowledge base
+nalvin --workspace <ws> kb nodes list --json
+nalvin --workspace <ws> kb edges list --json
+
+# Server
+nalvin serve
 ```
+
+## Development
 
 ```bash
-bun run cli -- agent run -p "Write a haiku about SQLite"
-bun run cli -- agent run --provider lmstudio -p "Say hello in one sentence."
-bun run cli -- agent run -p "Summarize this repo" --system "Be concise and technical."
-bun run cli -- agent run --queue --timing -p "Reply with exactly TTFT_OK and nothing else."
-bun run cli -- agent run --timing -p "Reply with exactly TTFT_OK and nothing else."
-bash ./scripts/benchmark-agent-run-ttft.sh --iterations 4 --warmups 1
+bun run dev          # API + web with hot reload
+bun run dev:api      # Go API only (via Air)
+bun run dev:web      # Vite dev server only
+bun run test:go      # Go tests
+bun run test:web     # Web tests
+bun run typecheck:web
+bun run build:web    # Build frontend for embedding
+bun run build:api    # Build Go binary (embeds web/dist)
 ```
-
-## Plan Mode
-
-`nalvin` supports a dedicated planning workflow for agent runs. Start a plan-only run with:
-
-```bash
-bun run cli -- --workspace alpha agent run --mode plan -p "Plan the release automation cleanup."
-```
-
-A plan run creates a canonical `.plans/<timestamp>-<slug>.md` file in the active workspace, pins the direct file-editing tools plus `plan_exit`, and instructs the agent to investigate and refine the plan without implementing the requested repo changes yet.
-
-When the plan is ready, the agent calls `plan_exit`. Attached and queued CLI flows can then prompt to start a fresh implementation run from the approved plan. The implementation handoff also carries the canonical plan path and plan body forward, and the current branch adds target-directory inference to avoid accidentally applying nested-repo plans at the workspace root.
-
-Use `--resume <run-id>` to continue an existing plan run. If the stored run is already in plan mode, resuming it without `--mode` keeps the planning workflow active.
 
 ## Docs
 
-- [Agent plan mode](docs/agent-plan-mode.md)
 - [Agent tools](docs/agent-tools.md)
-- [Git server and tools](docs/git-server-and-tools.md)
+- [Agent custom tools](docs/agent-custom-tools.md)
+- [Agent conversation compaction](docs/agent-conversation-compaction.md)
+- [Agent tool output spillover](docs/agent-tool-output-spillover.md)
+- [Agent plan mode](docs/agent-plan-mode.md)
 - [Docker client and tools](docs/docker-client-and-tools.md)
+- [Git server and tools](docs/git-server-and-tools.md)
 
-## Build
+## License
 
-Build the frontend bundle:
-
-```bash
-bun run build:web
-```
-
-Then rebuild the Go binary so it embeds the generated `web/dist` assets:
-
-```bash
-bun run build:api
-```
-
-## Verification
-
-```bash
-bun run test:go
-bun run typecheck:web
-bun run build:web
-```
+Apache 2.0 — see [LICENSE](LICENSE).
