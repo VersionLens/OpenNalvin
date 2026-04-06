@@ -400,7 +400,7 @@ func (s *Server) handleAbortAppRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusAccepted, map[string]any{"run": run})
 }
 
-func (s *Server) handleDeleteAgentRunTurnAndFollowing(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteMessagesFromIndex(w http.ResponseWriter, r *http.Request) {
 	handle, err := s.runtime.currentHandle(r.Context())
 	if err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -408,9 +408,19 @@ func (s *Server) handleDeleteAgentRunTurnAndFollowing(w http.ResponseWriter, r *
 	}
 	store := handle.store
 	runID := chi.URLParam(r, "runID")
-	turnID := chi.URLParam(r, "turnID")
 
-	if err := store.DeleteAgentRunTurnAndFollowing(r.Context(), runID, turnID); err != nil {
+	fromIndexStr := strings.TrimSpace(r.URL.Query().Get("from_user_index"))
+	if fromIndexStr == "" {
+		s.writeError(w, http.StatusBadRequest, "from_user_index query parameter is required")
+		return
+	}
+	fromIndex, err := strconv.Atoi(fromIndexStr)
+	if err != nil || fromIndex < 0 {
+		s.writeError(w, http.StatusBadRequest, "from_user_index must be a non-negative integer")
+		return
+	}
+
+	if err := store.DeleteMessagesFromUserIndex(r.Context(), runID, fromIndex); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, knowledge.ErrNotFound) {
 			status = http.StatusNotFound

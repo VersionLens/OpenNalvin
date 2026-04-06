@@ -41,89 +41,28 @@ func TestEffectiveSystemPromptForRootIncludesDelegationGuidance(t *testing.T) {
 	now := time.Date(2026, time.March, 31, 22, 21, 0, 0, zone)
 
 	got := effectiveSystemPromptForRunAt(now, "", RunKindRoot)
-	if !strings.Contains(got, "DELEGATION STRATEGY") {
-		t.Fatalf("expected root prompt to include delegation guidance, got %q", got)
-	}
-	if !strings.Contains(got, "you MUST explicitly consider") {
-		t.Fatalf("expected root prompt to require explicit delegation consideration, got %q", got)
-	}
-	if !strings.Contains(got, "web research on separate subtopics") {
-		t.Fatalf("expected root prompt to include delegation examples, got %q", got)
-	}
-	if !strings.Contains(got, "If there are 3 clearly separable research threads, default to using 3 child") {
-		t.Fatalf("expected root prompt to include stronger multi-thread delegation guidance, got %q", got)
-	}
-	if !strings.Contains(got, "TODO TRACKING") {
-		t.Fatalf("expected root prompt to include todo guidance, got %q", got)
-	}
-	if !strings.Contains(got, "use todoread and todowrite") {
-		t.Fatalf("expected root prompt to mention todo tools, got %q", got)
-	}
-	if !strings.Contains(got, "you MUST explicitly decide whether") {
-		t.Fatalf("expected root prompt to require explicit todo consideration, got %q", got)
-	}
-	if !strings.Contains(got, "Todo tracking is required when") {
-		t.Fatalf("expected root prompt to define when todo tracking is required, got %q", got)
-	}
-	if !strings.Contains(got, "medium or large research/comparison work") {
-		t.Fatalf("expected root prompt to require todo tracking for medium research work, got %q", got)
-	}
-	if !strings.Contains(got, "do not keep the task list only in your reasoning") {
-		t.Fatalf("expected root prompt to forbid keeping required todos only in reasoning, got %q", got)
-	}
-	if !strings.Contains(got, "your first substantive tool action should") {
-		t.Fatalf("expected root prompt to prioritize early todo tool usage, got %q", got)
-	}
-	if !strings.Contains(got, "On a fresh run, create the todo list early with todowrite") {
-		t.Fatalf("expected root prompt to require early todowrite on fresh runs, got %q", got)
-	}
-	if !strings.Contains(got, "Keep exactly one item in_progress") {
-		t.Fatalf("expected root prompt to include todo usage guidance, got %q", got)
-	}
-	if !strings.Contains(got, "Before waiting on multiple child agents") {
-		t.Fatalf("expected root prompt to include child-agent todo guidance, got %q", got)
-	}
-	if !strings.Contains(got, "the default behavior should be to create and maintain a todo list") {
-		t.Fatalf("expected root prompt to default to todo tracking for substantial tasks, got %q", got)
-	}
-	if !strings.Contains(got, "maintaining a todo list even if you are not using child agents") {
-		t.Fatalf("expected root prompt to default todo tracking for medium research without child agents, got %q", got)
-	}
-	if !strings.Contains(got, "hidden domain-specific tools may exist") {
-		t.Fatalf("expected root prompt to mention hidden domain-specific tools, got %q", got)
-	}
-	if !strings.Contains(got, "news, headlines, RSS feeds") {
-		t.Fatalf("expected root prompt to mention news-style requests, got %q", got)
-	}
-	if !strings.Contains(got, "news, rss, headlines, reddit, subreddit") {
-		t.Fatalf("expected root prompt to include concise news discovery queries, got %q", got)
-	}
-	if !strings.Contains(got, "over broad web search") {
-		t.Fatalf("expected root prompt to prefer domain-specific tools over web search, got %q", got)
-	}
-	if !strings.Contains(got, "NEWS TOOL AWARENESS") {
-		t.Fatalf("expected root prompt to include child-safe news tool awareness, got %q", got)
-	}
-	if !strings.Contains(got, "NEWS COLLECTION PLAYBOOK") {
-		t.Fatalf("expected root prompt to include news collection guidance, got %q", got)
-	}
-	if !strings.Contains(got, "Use todowrite early to track the categories or sources") {
-		t.Fatalf("expected root prompt to require early todo tracking for news collection, got %q", got)
-	}
-	if !strings.Contains(got, "news_rss_headlines, news_reddit_top_posts, and news_reddit_post_details") {
-		t.Fatalf("expected root prompt to name the news tools explicitly, got %q", got)
-	}
-	if !strings.Contains(got, "Use both RSS and Reddit tools") {
-		t.Fatalf("expected root prompt to combine RSS and Reddit tools for broad news requests, got %q", got)
-	}
-	if !strings.Contains(got, "mapped onto the available") {
-		t.Fatalf("expected root prompt to mention category mapping for news collection, got %q", got)
-	}
-	if !strings.Contains(got, "one child per category or per source family") {
-		t.Fatalf("expected root prompt to suggest category-level news delegation, got %q", got)
-	}
-	if !strings.Contains(got, "use that response to correct") {
-		t.Fatalf("expected root prompt to use available categories to correct the plan, got %q", got)
+
+	// Core workflow guidance
+	for _, needle := range []string{
+		"HOW TO WORK",
+		"search_tools",
+		"todowrite",
+		"Complete ALL steps",
+		// Child agent guidance (root only)
+		"CHILD AGENTS",
+		"child agents to work in parallel",
+		// Todo guidance (root only)
+		"TODO TRACKING",
+		"call todowrite FIRST",
+		"check that every item is completed",
+		// News guidance
+		"NEWS AND CURRENT EVENTS",
+		`"news" or "reddit"`,
+		"use those",
+	} {
+		if !strings.Contains(got, needle) {
+			t.Fatalf("expected root prompt to include %q, got %q", needle, got)
+		}
 	}
 }
 
@@ -134,32 +73,21 @@ func TestEffectiveSystemPromptForChildOmitsDelegationGuidance(t *testing.T) {
 	now := time.Date(2026, time.March, 31, 22, 21, 0, 0, zone)
 
 	got := effectiveSystemPromptForRunAt(now, "", RunKindChild)
-	if strings.Contains(got, "DELEGATION STRATEGY") {
+
+	// Child should NOT have delegation or todo sections
+	if strings.Contains(got, "CHILD AGENTS") {
 		t.Fatalf("expected child prompt to omit delegation guidance, got %q", got)
-	}
-	if strings.Contains(got, "web research on separate subtopics") {
-		t.Fatalf("expected child prompt to omit delegation examples, got %q", got)
 	}
 	if strings.Contains(got, "TODO TRACKING") {
 		t.Fatalf("expected child prompt to omit todo guidance, got %q", got)
 	}
-	if strings.Contains(got, "use todoread and todowrite") {
-		t.Fatalf("expected child prompt to omit todo tool guidance, got %q", got)
-	}
-	if !strings.Contains(got, "NEWS TOOL AWARENESS") {
+
+	// Child should still have news awareness and workspace access
+	if !strings.Contains(got, "NEWS AND CURRENT EVENTS") {
 		t.Fatalf("expected child prompt to include news tool awareness, got %q", got)
 	}
-	if !strings.Contains(got, "news_rss_headlines, news_reddit_top_posts, and news_reddit_post_details") {
-		t.Fatalf("expected child prompt to name the news tools explicitly, got %q", got)
-	}
-	if !strings.Contains(got, "mapped onto the available") {
-		t.Fatalf("expected child prompt to mention category mapping for news collection, got %q", got)
-	}
-	if !strings.Contains(got, "Use web search only as a fallback") {
-		t.Fatalf("expected child prompt to keep web search as fallback for news collection, got %q", got)
-	}
-	if strings.Contains(got, "NEWS COLLECTION PLAYBOOK") {
-		t.Fatalf("expected child prompt to omit root-only news collection playbook, got %q", got)
+	if !strings.Contains(got, "WORKSPACE ACCESS") {
+		t.Fatalf("expected child prompt to include workspace access guidance, got %q", got)
 	}
 }
 

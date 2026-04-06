@@ -109,9 +109,7 @@ agent:
     default_disabled: []
     default_pinned:
       - mcp__exa__web_search_exa
-      - search_knowledge
       - search_tools
-      - web_fetch_get
     metadata:
       mcp__exa__web_search_exa:
         keywords:

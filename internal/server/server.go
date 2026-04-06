@@ -101,7 +101,7 @@ func (s *Server) Handler() http.Handler {
 				ar.Post("/{runID}/messages", s.handleCreateAppRunMessage)
 				ar.Post("/{runID}/implement-plan", s.handleImplementPlan)
 				ar.Post("/{runID}/abort", s.handleAbortAppRun)
-				ar.Delete("/{runID}/turns/{turnID}", s.handleDeleteAgentRunTurnAndFollowing)
+				ar.Delete("/{runID}/messages", s.handleDeleteMessagesFromIndex)
 				ar.Get("/{runID}/tool-outputs/{outputID}", s.handleGetAgentRunToolOutput)
 				ar.Get("/{runID}/tool-outputs/{outputID}/grep", s.handleSearchAgentRunToolOutput)
 			})
