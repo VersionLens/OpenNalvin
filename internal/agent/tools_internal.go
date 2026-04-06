@@ -447,6 +447,9 @@ func (rt *agentRuntime) searchTools(_ context.Context, input searchToolsInput, _
 	if len(matches) == 0 && len(rt.warnings) > 0 {
 		result["warnings"] = rt.warnings
 	}
+	if len(revealed) > 0 {
+		result["next_step"] = "These tools are now available. Use them to complete the task."
+	}
 	return jsonToolResponse(result)
 }
 

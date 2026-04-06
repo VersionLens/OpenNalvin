@@ -27,10 +27,22 @@ const baseSystemPrompt = `You are a capable AI assistant. You have access to man
 
 HOW TO WORK
 1. Break the task into steps. If there are 2+ steps, call todowrite first.
-2. Use search_tools to find tools you need. Use short queries like "file write", "file read", "knowledge", "docker", "git", "news", "fetch url". You MUST discover tools before you can use them.
-3. Do the work. Call the tools you discovered to complete each step.
-4. After each step, update your todo list (mark completed, start next).
+2. Discover ALL tools you will need before starting work. Call search_tools once for each category (e.g. "file write", "shell"). Do all discovery up front.
+3. Do the work. Use the discovered tools to complete each step. Do not stop between steps.
+4. Update your todo list after completing a group of related steps — not after every single tool call.
 5. Before finishing, review the original request. Complete ALL steps. Do not stop early.
+
+EXAMPLE WORKFLOW
+User: "Create files a.txt and b.txt, then use shell to combine them into c.txt"
+Good:
+  todowrite → [{content: "Create files", status: "in_progress"}, {content: "Combine with shell", status: "pending"}]
+  search_tools("file write") → reveals write
+  search_tools("shell") → reveals shell
+  write({path: "a.txt", content: "A"})
+  write({path: "b.txt", content: "B"})
+  shell({script: "cat a.txt b.txt > combined.txt && write --path c.txt --content \"$(cat combined.txt)\""})
+  todowrite → [both completed]
+Do NOT call todowrite between every tool call. Do the work first, update after.
 
 SHELL TOOL
 For loops, pipelines, or multi-step operations, use the shell tool. All revealed tools are available as commands inside it with --flag syntax. Example:
@@ -528,6 +540,38 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 	}
 
 	result, err := fantasy.NewAgent(model, agentOpts...).Stream(ctx, streamCall)
+
+	// Incomplete-todo recovery: if the model stopped but there are pending or
+	// in-progress todo items, nudge it to continue by injecting a user message
+	// and re-streaming. This helps local models that emit premature stop tokens.
+	const maxTodoContinuations = 5
+	for todoRetry := 0; todoRetry < maxTodoContinuations && err == nil && ctx.Err() == nil; todoRetry++ {
+		todos := runtime.todoState()
+		if len(todos) == 0 {
+			break
+		}
+		hasPending := false
+		for _, item := range todos {
+			if item.Status == "pending" || item.Status == "in_progress" {
+				hasPending = true
+				break
+			}
+		}
+		if !hasPending {
+			break
+		}
+		session.debugf("todo-continuation retry=%d: found incomplete todos, nudging model to continue", todoRetry+1)
+		builder.FlushAssistant()
+		builder.AddUserMessage("You have incomplete todo items. Continue working on the remaining steps. Do not stop until all items are completed.")
+		builder.trace.Metadata = session.metadata()
+		builder.trace.Metadata.Tools = runtime.toolState()
+		builder.trace.Todos = runtime.todoState()
+		retryHistory := traceToFantasyMessages(builder.trace)
+		streamCall.Prompt = ""
+		streamCall.Messages = retryHistory
+		persistProgress(true)
+		result, err = fantasy.NewAgent(model, agentOpts...).Stream(ctx, streamCall)
+	}
 
 	// Reactive overflow recovery: if context is too large, attempt aggressive
 	// compaction once and retry.

@@ -61,7 +61,7 @@ Three provider types are supported:
 | `anthropic` | Anthropic API |
 | `openai_compat` | Any OpenAI-compatible API (requires `base_url`) |
 
-For local servers like LM Studio, Ollama, or vLLM:
+For local servers like LM Studio, Ollama, llama.cpp, or vLLM:
 
 ```yaml
 providers:
@@ -76,6 +76,18 @@ Use a specific provider for a run:
 ```bash
 nalvin --workspace myproject agent run --provider claude -p "Summarize all files in the workspace"
 ```
+
+### Working with local models
+
+Local models vary widely in tool-calling reliability. nalvin includes several features that help smaller models succeed at multi-step tasks:
+
+- **Tool discovery via `search_tools`** keeps the visible tool set small, reducing prompt size and model confusion. Only a handful of tools are pinned (visible from the start); the rest are discovered on demand.
+- **Todo-based continuation** — when the model creates a todo list with `todowrite` but stops before completing all items, the runtime automatically nudges it to continue (up to 5 retries). This compensates for local models that emit premature stop tokens mid-task.
+- **System prompt tuning** — the base system prompt includes a numbered workflow (`todowrite` → `search_tools` → do work → update todos) and a concrete example, both designed to guide smaller models through multi-step tasks.
+
+For model-specific setup guides, see:
+
+- [Running Qwen 3.5 with llama.cpp](docs/local-model-qwen3.5-llamacpp.md)
 
 ### Create a workspace and run the agent
 
@@ -504,6 +516,7 @@ bun run build:api    # Build Go binary (embeds web/dist)
 - [Agent plan mode](docs/agent-plan-mode.md)
 - [Docker client and tools](docs/docker-client-and-tools.md)
 - [Git server and tools](docs/git-server-and-tools.md)
+- [Running Qwen 3.5 with llama.cpp](docs/local-model-qwen3.5-llamacpp.md)
 
 ## License
 
