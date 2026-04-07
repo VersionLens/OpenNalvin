@@ -142,6 +142,10 @@ bun run dev:web   # Vite dev server on :4211, proxies /api to Go
 
 Open `http://localhost:4211` to browse agent runs, inspect tool calls, view spilled outputs, and start new conversations.
 
+### Cross-platform frontend (experimental)
+
+There is an experimental Flutter-based client at [VersionLens/OpenNalvin_app](https://github.com/VersionLens/OpenNalvin_app). It is not production-ready and exists to explore what a cross-platform client for OpenNalvin could look like across iOS, Android, macOS, Linux, and Windows.
+
 ## Architecture
 
 ### Tool System
