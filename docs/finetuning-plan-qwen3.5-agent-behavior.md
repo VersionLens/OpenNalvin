@@ -516,3 +516,191 @@ All phases (SFT Phase 1 + SFT Phase 2 + DPO Phase 3) run on a **single GPU** wit
 | **Truncation over-triggering** | Low | Include examples where results are NOT truncated and no spillover is needed |
 | **Loss of `research` tool smarts** | Low | Include Qwen's good linear_scout trace in training set |
 | **Format mismatch** | Medium | Validate every example against Qwen's tokenizer before training |
+
+---
+
+## Appendix: Inspecting Agent Runs with SQLite
+
+Every agent run is stored in `~/.nalvin/workspace-db/<workspace>.sqlite`. The examples below use the `integrations-test` workspace.
+
+### Database schema overview
+
+```
+agent_runs              — one row per run (root or child)
+agent_run_turns         — one row per user turn within a run
+agent_run_events        — SSE events emitted during the run
+agent_run_tool_outputs  — spillover tool outputs stored separately
+```
+
+The `trace` column on `agent_runs` is a JSON blob containing the full message history including tool calls, tool results, reasoning, and timing.
+
+### List recent runs
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT id, status, model, duration_ms, message_count,
+         input_tokens, output_tokens,
+         substr(prompt, 1, 80) AS prompt_preview
+  FROM agent_runs
+  WHERE run_kind = 'root'
+  ORDER BY updated_at DESC
+  LIMIT 10;
+"
+```
+
+### Get a run and all its subagent runs
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT id, model, task_name, run_kind, status,
+         duration_ms, message_count, input_tokens, output_tokens
+  FROM agent_runs
+  WHERE id = '<RUN_ID>' OR root_run_id = '<RUN_ID>'
+  ORDER BY created_at;
+"
+```
+
+### Extract the full tool call sequence from a run
+
+```sql
+sqlite3 -json ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    json_extract(tc.value, '$.function.name') AS tool,
+    json_extract(tc.value, '$.function.arguments') AS args,
+    CASE WHEN json_array_length(json_extract(m.value, '$.tool_calls')) > 1
+         THEN 'parallel' ELSE 'sequential' END AS mode
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m,
+    json_each(json_extract(m.value, '$.tool_calls')) tc
+  WHERE ar.id = '<RUN_ID>'
+    AND json_extract(m.value, '$.role') = 'assistant'
+    AND json_extract(m.value, '$.tool_calls') IS NOT NULL;
+"
+```
+
+### Count tool calls per tool per subagent
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    ar.task_name,
+    json_extract(tc.value, '$.function.name') AS tool,
+    COUNT(*) AS calls
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m,
+    json_each(json_extract(m.value, '$.tool_calls')) tc
+  WHERE ar.root_run_id = '<ROOT_RUN_ID>'
+    AND json_extract(m.value, '$.role') = 'assistant'
+  GROUP BY ar.task_name, tool
+  ORDER BY ar.task_name, calls DESC;
+"
+```
+
+### Find truncated tool results (candidates for spillover handling analysis)
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    ar.task_name,
+    json_extract(m.value, '$.tool_name') AS tool,
+    json_extract(m.value, '$.content_json.output_id') AS output_id,
+    json_extract(m.value, '$.content_json.estimated_tokens') AS est_tokens,
+    json_extract(m.value, '$.content_json.inline_truncated') AS truncated
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m
+  WHERE (ar.id = '<RUN_ID>' OR ar.root_run_id = '<RUN_ID>')
+    AND json_extract(m.value, '$.role') = 'tool'
+    AND json_extract(m.value, '$.content_json.inline_truncated') = 1;
+"
+```
+
+### Extract the final assistant message (executive summary)
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT json_extract(m.value, '$.content')
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m
+  WHERE ar.id = '<RUN_ID>'
+    AND json_extract(m.value, '$.role') = 'assistant'
+    AND json_extract(m.value, '$.content') IS NOT NULL
+    AND json_extract(m.value, '$.content') != ''
+  ORDER BY ROWID DESC
+  LIMIT 1;
+"
+```
+
+### Extract the full trace as formatted JSON
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT json_extract(trace, '$.messages')
+  FROM agent_runs
+  WHERE id = '<RUN_ID>';
+" | python3 -m json.tool > trace.json
+```
+
+### Measure trace size (for sequence length planning)
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    ar.model,
+    ar.task_name,
+    ar.message_count,
+    length(ar.trace) AS trace_bytes,
+    length(ar.trace) / 4 AS approx_tokens
+  FROM agent_runs ar
+  WHERE ar.id = '<RUN_ID>' OR ar.root_run_id = '<RUN_ID>'
+  ORDER BY length(ar.trace) DESC;
+"
+```
+
+### Compare parallel vs sequential tool calling across models
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    ar.model,
+    ar.task_name,
+    COUNT(*) AS total_calls,
+    SUM(CASE WHEN json_array_length(json_extract(m.value, '$.tool_calls')) > 1
+             THEN 1 ELSE 0 END) AS parallel_calls,
+    ROUND(100.0 * SUM(CASE WHEN json_array_length(json_extract(m.value, '$.tool_calls')) > 1
+             THEN 1 ELSE 0 END) / COUNT(*), 1) AS parallel_pct
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m,
+    json_each(json_extract(m.value, '$.tool_calls')) tc
+  WHERE ar.root_run_id IN ('<OPUS_ID>', '<GLM_ID>', '<QWEN_ID>')
+    AND json_extract(m.value, '$.role') = 'assistant'
+  GROUP BY ar.model, ar.task_name
+  ORDER BY ar.model, ar.task_name;
+"
+```
+
+### View spillover tool outputs for a run
+
+```sql
+sqlite3 ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT output_id, tool_name, size_bytes, estimated_tokens,
+         total_lines, stored_truncated, inline_truncated
+  FROM agent_run_tool_outputs
+  WHERE run_id = '<RUN_ID>'
+  ORDER BY created_at;
+"
+```
+
+### Get spawn_agent tool enablement (what tools each subagent was given)
+
+```sql
+sqlite3 -json ~/.nalvin/workspace-db/integrations-test.sqlite "
+  SELECT
+    json_extract(tc.value, '$.function.arguments') AS spawn_args
+  FROM agent_runs ar,
+    json_each(json_extract(ar.trace, '$.messages')) m,
+    json_each(json_extract(m.value, '$.tool_calls')) tc
+  WHERE ar.id = '<ROOT_RUN_ID>'
+    AND json_extract(m.value, '$.role') = 'assistant'
+    AND json_extract(tc.value, '$.function.name') = 'spawn_agent';
+" | python3 -m json.tool
+```
