@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -27,7 +26,7 @@ import (
 // skill's manifest.yaml run once per agentRuntime (roughly: per run) before
 // the first command is exec'd.
 
-var nonContainerNameChars = regexp.MustCompile(`[^a-z0-9_.-]+`)
+// nonContainerNameChars is shared with shell_docker_fallback.go.
 
 // skillExecResult carries back what a skill command produced.
 type skillExecResult struct {
