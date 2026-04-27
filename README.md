@@ -511,6 +511,56 @@ work:
 
 When the server is running (`nalvin serve`), the worker pool processes queued runs. The web UI streams run events via SSE in real time.
 
+### Trace Curation for Finetuning
+
+Every agent run is recorded immutably in SQLite. The `agent traces` CLI is the curation pipeline that turns raw runs into a Tinker-compatible SFT dataset for finetuning small models on frontier behavior.
+
+The flow has three stages:
+
+1. **Triage** — score raw runs by completion, tool-call activity, reasoning content, and error rate to find the ones worth reviewing.
+2. **Curate** — derive an editable copy of a raw run, then label, redact, edit messages, drop bad turns, and approve/reject.
+3. **Export** — emit approved curations as JSONL conversations in the [Tinker](https://thinkingmachines.ai/tinker/) SFT format (system/user/assistant/tool messages, tool calls, optional thinking parts), ready to feed a finetuning run.
+
+```bash
+# Triage: rank raw runs by review-worthiness
+nalvin --workspace <ws> agent traces candidates --min-tool-calls 2 --max-tool-errors 0
+
+# Inspect a single run with the review-oriented view
+nalvin --workspace <ws> agent traces show <run-id> --view timeline
+nalvin --workspace <ws> agent traces stats <run-id>
+
+# Page through or grep a spilled tool output from a past run
+nalvin --workspace <ws> agent traces output <run-id> <output-id> --offset 0 --limit 200
+nalvin --workspace <ws> agent traces grep-output <run-id> <output-id> --pattern 'panic:'
+
+# Curate: derive an editable copy, then label / edit / approve
+nalvin --workspace <ws> agent traces derive <run-id> --title "git log refactor" --tag refactor
+nalvin --workspace <ws> agent traces label <curation-id> --quality good --reward 1.0 --split train
+nalvin --workspace <ws> agent traces redact <curation-id> --pattern 'sk-[A-Za-z0-9]{20,}'
+nalvin --workspace <ws> agent traces msg replace <curation-id> <msg-ref> --content-file edit.txt
+nalvin --workspace <ws> agent traces msg drop <curation-id> <msg-ref>
+nalvin --workspace <ws> agent traces edit <curation-id>            # opens curation JSON in $EDITOR
+nalvin --workspace <ws> agent traces diff <curation-id>            # diff vs source run
+nalvin --workspace <ws> agent traces approve <curation-id>
+
+# Batch: derive + label + approve in one step
+nalvin --workspace <ws> agent traces curate <run-id-1> <run-id-2> \
+  --quality good --split train --tag tool-discovery --approve
+
+# Export approved curations to a Tinker SFT JSONL
+nalvin --workspace <ws> agent traces export \
+  --format tinker-sft --status approved --split train \
+  --reasoning include --materialize-tool-outputs \
+  --out ./datasets/run-2026-04
+nalvin --workspace <ws> agent traces verify-export ./datasets/run-2026-04
+
+# Baseline probe suite for comparing pre/post-finetune behavior
+nalvin --workspace <ws> agent traces baseline-suite --commands \
+  --provider local --workspace bench --served-model qwen3.5-4b
+```
+
+Curated traces are stored alongside raw runs in the workspace SQLite. Raw runs stay immutable — every edit lives on the curation. `traces diff` shows what was changed and warns if the source run hash drifts. See [`docs/tinker-trace-curation-plan.md`](docs/tinker-trace-curation-plan.md) for the full curation spec.
+
 ## Configuration Reference
 
 The CLI loads config in this order (later wins):
@@ -599,6 +649,15 @@ nalvin agent skills browse [query]
 nalvin agent skills install <source>
 nalvin --workspace <ws> agent run --skill shell-composition -p "..."
 
+# Trace curation (finetuning dataset pipeline)
+nalvin --workspace <ws> agent traces list
+nalvin --workspace <ws> agent traces candidates --min-tool-calls 2
+nalvin --workspace <ws> agent traces show <run-id> --view timeline
+nalvin --workspace <ws> agent traces derive <run-id>
+nalvin --workspace <ws> agent traces label <curation-id> --quality good --split train
+nalvin --workspace <ws> agent traces approve <curation-id>
+nalvin --workspace <ws> agent traces export --format tinker-sft --out ./datasets/v1
+
 # Provider management
 nalvin provider list
 nalvin provider add lmstudio --base-url http://localhost:1234/v1 --model local-model
@@ -649,6 +708,7 @@ bun run build:api    # Build Go binary (embeds web/dist)
 - [Agent conversation compaction](docs/agent-conversation-compaction.md)
 - [Agent tool output spillover](docs/agent-tool-output-spillover.md)
 - [Agent plan mode](docs/agent-plan-mode.md)
+- [Trace curation for Tinker SFT export](docs/tinker-trace-curation-plan.md)
 - [Docker client and tools](docs/docker-client-and-tools.md)
 - [Git server and tools](docs/git-server-and-tools.md)
 - [Running Qwen 3.5 with llama.cpp](docs/local-model-qwen3.5-llamacpp.md)
