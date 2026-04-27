@@ -1,0 +1,16 @@
+.DS_Store
+tmp/
+node_modules/
+web/node_modules/
+web/dist/index.html
+web/dist/assets/
+coverage/
+nalvin
+nalvin
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
