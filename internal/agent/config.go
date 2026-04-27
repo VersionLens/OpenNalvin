@@ -16,6 +16,7 @@ const (
 	ProviderTypeOpenAI       = "openai"
 	ProviderTypeOpenAICompat = "openai_compat"
 	ProviderTypeAnthropic    = "anthropic"
+	ProviderTypeVertex       = "vertex"
 )
 
 func normalizeProviderName(name string) string {
@@ -32,6 +33,8 @@ type ProviderConfig struct {
 	BaseURL              string
 	APIKey               string
 	Model                string
+	Project              string
+	Location             string
 	UserAgentOverride    string
 	ReasoningEffort      string
 	ToolOutputTokenLimit int
@@ -56,6 +59,8 @@ func LoadProviderConfig(name string) (ProviderConfig, error) {
 		BaseURL:              strings.TrimSpace(viper.GetString(prefix + ".base_url")),
 		APIKey:               strings.TrimSpace(os.ExpandEnv(viper.GetString(prefix + ".api_key"))),
 		Model:                strings.TrimSpace(viper.GetString(prefix + ".model")),
+		Project:              strings.TrimSpace(os.ExpandEnv(viper.GetString(prefix + ".project"))),
+		Location:             strings.TrimSpace(os.ExpandEnv(viper.GetString(prefix + ".location"))),
 		UserAgentOverride:    strings.TrimSpace(viper.GetString(prefix + ".user_agent_override")),
 		ReasoningEffort:      configpkg.NormalizeProviderReasoningEffort(viper.GetString(prefix + ".reasoning_effort")),
 		ToolOutputTokenLimit: viper.GetInt(prefix + ".tool_output_token_limit"),
@@ -73,6 +78,17 @@ func LoadProviderConfig(name string) (ProviderConfig, error) {
 		return ProviderConfig{}, fmt.Errorf("provider %q: base_url not configured for type %q", name, cfg.Type)
 	case reasoningErr != nil:
 		return ProviderConfig{}, fmt.Errorf("provider %q: %w", name, reasoningErr)
+	case cfg.Type == ProviderTypeVertex:
+		if cfg.Project == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: project not configured for type %q", name, cfg.Type)
+		}
+		if cfg.Location == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: location not configured for type %q", name, cfg.Type)
+		}
+		if cfg.Model == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: model not configured", name)
+		}
+		return cfg, nil
 	case cfg.APIKey == "":
 		return ProviderConfig{}, fmt.Errorf("provider %q: api_key not configured", name)
 	case cfg.Model == "":

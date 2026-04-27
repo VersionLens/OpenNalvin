@@ -18,6 +18,20 @@ discord:
   public_url: ""
   guild_allowlist: []
   status_message: ""
+  # Voice-channel "Gemini Live" bridge. When enabled, the bot joins the
+  # configured voice channels whenever any user is present and streams a
+  # real-time conversation with Gemini Live (audio in/out, transcripts
+  # posted to a thread).
+  #
+  # live:
+  #   enabled: false
+  #   provider_name: "gemini-live"          # vertex provider in providers:
+  #   auto_join_voice_channel_ids: []       # voice-channel IDs to attach to
+  #   system_prompt: ""                     # optional system instruction
+  #   voice_name: "Aoede"                   # optional prebuilt voice name
+  #   session_resumption: true
+  #   max_sessions: 4
+  #   transcript_thread_parent_channel_id: ""  # text channel where transcript threads are spawned
 docker:
   host: ""
   binary: ""

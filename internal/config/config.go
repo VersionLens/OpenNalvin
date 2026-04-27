@@ -52,12 +52,24 @@ type ServerConfig struct {
 }
 
 type DiscordConfig struct {
-	Enabled        bool     `mapstructure:"enabled"`
-	Token          string   `mapstructure:"token"`
-	ApplicationID  string   `mapstructure:"application_id"`
-	PublicURL      string   `mapstructure:"public_url"`
-	GuildAllowlist []string `mapstructure:"guild_allowlist"`
-	StatusMessage  string   `mapstructure:"status_message"`
+	Enabled        bool              `mapstructure:"enabled"`
+	Token          string            `mapstructure:"token"`
+	ApplicationID  string            `mapstructure:"application_id"`
+	PublicURL      string            `mapstructure:"public_url"`
+	GuildAllowlist []string          `mapstructure:"guild_allowlist"`
+	StatusMessage  string            `mapstructure:"status_message"`
+	Live           DiscordLiveConfig `mapstructure:"live"`
+}
+
+type DiscordLiveConfig struct {
+	Enabled                         bool     `mapstructure:"enabled"`
+	ProviderName                    string   `mapstructure:"provider_name"`
+	AutoJoinVoiceChannelIDs         []string `mapstructure:"auto_join_voice_channel_ids"`
+	SystemPrompt                    string   `mapstructure:"system_prompt"`
+	VoiceName                       string   `mapstructure:"voice_name"`
+	SessionResumption               bool     `mapstructure:"session_resumption"`
+	MaxSessions                     int      `mapstructure:"max_sessions"`
+	TranscriptThreadParentChannelID string   `mapstructure:"transcript_thread_parent_channel_id"`
 }
 
 type DockerConfig struct {
@@ -217,6 +229,8 @@ type ProviderConfig struct {
 	BaseURL              string `mapstructure:"base_url" yaml:"base_url,omitempty"`
 	APIKey               string `mapstructure:"api_key" yaml:"api_key,omitempty"`
 	Model                string `mapstructure:"model" yaml:"model,omitempty"`
+	Project              string `mapstructure:"project" yaml:"project,omitempty"`
+	Location             string `mapstructure:"location" yaml:"location,omitempty"`
 	UserAgentOverride    string `mapstructure:"user_agent_override" yaml:"user_agent_override,omitempty"`
 	ReasoningEffort      string `mapstructure:"reasoning_effort" yaml:"reasoning_effort,omitempty"`
 	ToolOutputTokenLimit int    `mapstructure:"tool_output_token_limit" yaml:"tool_output_token_limit,omitempty"`
@@ -235,6 +249,7 @@ const (
 	ProviderTypeOpenAI       = "openai"
 	ProviderTypeOpenAICompat = "openai_compat"
 	ProviderTypeAnthropic    = "anthropic"
+	ProviderTypeVertex       = "vertex"
 )
 
 var providerReasoningEfforts = map[string][]string{
@@ -330,6 +345,16 @@ func Load() (Config, error) {
 			PublicURL:      strings.TrimSpace(v.GetString("discord.public_url")),
 			GuildAllowlist: normalizeOrigins(v.Get("discord.guild_allowlist")),
 			StatusMessage:  strings.TrimSpace(v.GetString("discord.status_message")),
+			Live: DiscordLiveConfig{
+				Enabled:                         v.GetBool("discord.live.enabled"),
+				ProviderName:                    strings.TrimSpace(v.GetString("discord.live.provider_name")),
+				AutoJoinVoiceChannelIDs:         normalizeOrigins(v.Get("discord.live.auto_join_voice_channel_ids")),
+				SystemPrompt:                    strings.TrimSpace(v.GetString("discord.live.system_prompt")),
+				VoiceName:                       strings.TrimSpace(v.GetString("discord.live.voice_name")),
+				SessionResumption:               v.GetBool("discord.live.session_resumption"),
+				MaxSessions:                     v.GetInt("discord.live.max_sessions"),
+				TranscriptThreadParentChannelID: strings.TrimSpace(v.GetString("discord.live.transcript_thread_parent_channel_id")),
+			},
 		},
 		Workspace: WorkspaceConfig{
 			DBRoot:    expandPath(strings.TrimSpace(v.GetString("workspace.db_root"))),
@@ -1406,6 +1431,8 @@ func normalizeProviderConfig(provider ProviderConfig) ProviderConfig {
 	provider.BaseURL = strings.TrimSpace(provider.BaseURL)
 	provider.APIKey = strings.TrimSpace(provider.APIKey)
 	provider.Model = strings.TrimSpace(provider.Model)
+	provider.Project = strings.TrimSpace(provider.Project)
+	provider.Location = strings.TrimSpace(provider.Location)
 	provider.UserAgentOverride = strings.TrimSpace(provider.UserAgentOverride)
 	provider.ReasoningEffort = NormalizeProviderReasoningEffort(provider.ReasoningEffort)
 	return provider
@@ -1418,6 +1445,8 @@ func loadProviderConfig(v *viper.Viper, name string) ProviderConfig {
 		BaseURL:              v.GetString(prefix + ".base_url"),
 		APIKey:               v.GetString(prefix + ".api_key"),
 		Model:                v.GetString(prefix + ".model"),
+		Project:              v.GetString(prefix + ".project"),
+		Location:             v.GetString(prefix + ".location"),
 		UserAgentOverride:    v.GetString(prefix + ".user_agent_override"),
 		ReasoningEffort:      v.GetString(prefix + ".reasoning_effort"),
 		ToolOutputTokenLimit: v.GetInt(prefix + ".tool_output_token_limit"),
@@ -1439,7 +1468,7 @@ func normalizeProviderType(value string) string {
 
 func IsSupportedProviderType(value string) bool {
 	switch NormalizeProviderType(value) {
-	case ProviderTypeOpenAI, ProviderTypeOpenAICompat, ProviderTypeAnthropic:
+	case ProviderTypeOpenAI, ProviderTypeOpenAICompat, ProviderTypeAnthropic, ProviderTypeVertex:
 		return true
 	default:
 		return false
