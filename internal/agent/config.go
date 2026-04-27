@@ -16,6 +16,8 @@ const (
 	ProviderTypeOpenAI       = "openai"
 	ProviderTypeOpenAICompat = "openai_compat"
 	ProviderTypeAnthropic    = "anthropic"
+	ProviderTypeVertex       = "vertex"
+	ProviderTypeMistral      = "mistral"
 )
 
 func normalizeProviderName(name string) string {
@@ -32,6 +34,8 @@ type ProviderConfig struct {
 	BaseURL              string
 	APIKey               string
 	Model                string
+	Project              string
+	Location             string
 	UserAgentOverride    string
 	ReasoningEffort      string
 	ToolOutputTokenLimit int
@@ -51,11 +55,14 @@ func LoadProviderConfig(name string) (ProviderConfig, error) {
 	}
 
 	prefix := "providers." + name
+	rawType := strings.TrimSpace(strings.ToLower(viper.GetString(prefix + ".type")))
 	cfg := ProviderConfig{
 		Type:                 normalizeProviderType(viper.GetString(prefix + ".type")),
 		BaseURL:              strings.TrimSpace(viper.GetString(prefix + ".base_url")),
 		APIKey:               strings.TrimSpace(os.ExpandEnv(viper.GetString(prefix + ".api_key"))),
 		Model:                strings.TrimSpace(viper.GetString(prefix + ".model")),
+		Project:              strings.TrimSpace(viper.GetString(prefix + ".project")),
+		Location:             strings.TrimSpace(viper.GetString(prefix + ".location")),
 		UserAgentOverride:    strings.TrimSpace(viper.GetString(prefix + ".user_agent_override")),
 		ReasoningEffort:      configpkg.NormalizeProviderReasoningEffort(viper.GetString(prefix + ".reasoning_effort")),
 		ToolOutputTokenLimit: viper.GetInt(prefix + ".tool_output_token_limit"),
@@ -64,22 +71,54 @@ func LoadProviderConfig(name string) (ProviderConfig, error) {
 	if cfg.ToolOutputTokenLimit <= 0 {
 		cfg.ToolOutputTokenLimit = 4000
 	}
-	reasoningErr := configpkg.ValidateProviderReasoningEffort(cfg.Type, cfg.ReasoningEffort)
-
-	switch {
-	case !isSupportedProviderType(cfg.Type):
-		return ProviderConfig{}, fmt.Errorf("provider %q: unsupported type %q", name, cfg.Type)
-	case cfg.Type == ProviderTypeOpenAICompat && cfg.BaseURL == "":
-		return ProviderConfig{}, fmt.Errorf("provider %q: base_url not configured for type %q", name, cfg.Type)
-	case reasoningErr != nil:
-		return ProviderConfig{}, fmt.Errorf("provider %q: %w", name, reasoningErr)
-	case cfg.APIKey == "":
-		return ProviderConfig{}, fmt.Errorf("provider %q: api_key not configured", name)
-	case cfg.Model == "":
-		return ProviderConfig{}, fmt.Errorf("provider %q: model not configured", name)
-	default:
-		return cfg, nil
+	if rawType == configpkg.ProviderTypeMistral {
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = configpkg.MistralDefaultBaseURL
+		}
+		if cfg.Model == "" {
+			cfg.Model = configpkg.MistralDefaultModel
+		}
 	}
+	if configpkg.IsOpenCodeGoModelID(cfg.Model) {
+		route, err := configpkg.OpenCodeGoRouteForModel(cfg.Model)
+		if err != nil {
+			return ProviderConfig{}, fmt.Errorf("provider %q: %w", name, err)
+		}
+		cfg.Type = route.Type
+		cfg.BaseURL = route.BaseURL
+		cfg.Model = route.Model
+	}
+	if reasoningErr := configpkg.ValidateProviderReasoningEffort(cfg.Type, cfg.ReasoningEffort); reasoningErr != nil {
+		return ProviderConfig{}, fmt.Errorf("provider %q: %w", name, reasoningErr)
+	}
+
+	if !isSupportedProviderType(cfg.Type) {
+		return ProviderConfig{}, fmt.Errorf("provider %q: unsupported type %q", name, cfg.Type)
+	}
+	if cfg.Model == "" {
+		return ProviderConfig{}, fmt.Errorf("provider %q: model not configured", name)
+	}
+	switch cfg.Type {
+	case ProviderTypeVertex:
+		if cfg.Project == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: project not configured for type %q", name, cfg.Type)
+		}
+		if cfg.Location == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: location not configured for type %q", name, cfg.Type)
+		}
+	case ProviderTypeOpenAICompat:
+		if cfg.BaseURL == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: base_url not configured for type %q", name, cfg.Type)
+		}
+		if cfg.APIKey == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: api_key not configured", name)
+		}
+	default:
+		if cfg.APIKey == "" {
+			return ProviderConfig{}, fmt.Errorf("provider %q: api_key not configured", name)
+		}
+	}
+	return cfg, nil
 }
 
 func normalizeProviderType(value string) string {
