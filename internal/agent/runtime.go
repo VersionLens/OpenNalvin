@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/google/uuid"
@@ -570,6 +571,18 @@ func (rt *agentRuntime) composeSystemPromptAdditions() string {
 		return ""
 	}
 	return "\n\n" + strings.Join(sections, "\n\n")
+}
+
+// effectiveSystemPromptFor returns the run's effective system prompt: the
+// run-context base plus skill/project-instruction additions. Used to populate
+// StoredTrace.EffectiveSystemPrompt at trace-build sites so trace export and
+// review can replay what the model actually saw.
+func (rt *agentRuntime) effectiveSystemPromptFor(now time.Time, rawSystemPrompt string, meta StoredRunMeta) string {
+	base := effectiveSystemPromptForRunContextAt(now, rawSystemPrompt, meta)
+	if rt == nil {
+		return base
+	}
+	return base + rt.composeSystemPromptAdditions()
 }
 
 func (rt *agentRuntime) close() error {

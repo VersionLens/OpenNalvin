@@ -344,13 +344,17 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 	trace.Metadata = session.metadata()
 	trace.Metadata.Tools = runtime.toolState()
 	trace.Metadata.Skills = runtime.activeSkillsState()
+	trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 	trace.Todos = runtime.todoState()
+	trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), trace.SystemPrompt, trace.Metadata)
 	builder := newTraceBuilder(trace)
 	builder.AddUserMessage(req.Message)
 	builder.trace.Metadata = session.metadata()
 	builder.trace.Metadata.Tools = runtime.toolState()
 	builder.trace.Metadata.Skills = runtime.activeSkillsState()
+	builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 	builder.trace.Todos = runtime.todoState()
+	builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 	runtime.compactionTrace = &builder.trace
 
 	trace, rawTrace, err := builder.Build(now)
@@ -403,7 +407,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
 		builder.trace.Metadata.Skills = runtime.activeSkillsState()
+		builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 		builder.trace.Todos = runtime.todoState()
+		builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 		progressTrace, progressRawTrace, buildErr := builder.Snapshot(time.Now().UTC())
 		if buildErr != nil {
 			session.debugf("persist progress snapshot failed run_id=%s error=%v", runID, buildErr)
@@ -555,7 +561,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 			builder.trace.Metadata = session.metadata()
 			builder.trace.Metadata.Tools = runtime.toolState()
 			builder.trace.Metadata.Skills = runtime.activeSkillsState()
+			builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 			builder.trace.Todos = runtime.todoState()
+			builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 			persistProgress(true)
 			metadata := parseToolResultClientMetadata(tr.ClientMetadata)
 			if metadata.ToolOutputRef != nil {
@@ -614,7 +622,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
 		builder.trace.Metadata.Skills = runtime.activeSkillsState()
+		builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 		builder.trace.Todos = runtime.todoState()
+		builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 		retryHistory := traceToFantasyMessages(builder.trace)
 		streamCall.Prompt = ""
 		streamCall.Messages = retryHistory
@@ -662,7 +672,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
 		builder.trace.Metadata.Skills = runtime.activeSkillsState()
+		builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 		builder.trace.Todos = runtime.todoState()
+		builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 		trace, rawTrace, buildErr := builder.Build(time.Now().UTC())
 		if buildErr == nil {
 			updateErr := store.UpdateAgentRun(context.Background(), knowledge.UpdateAgentRunInput{
@@ -704,7 +716,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 	builder.trace.Metadata = session.metadata()
 	builder.trace.Metadata.Tools = runtime.toolState()
 	builder.trace.Metadata.Skills = runtime.activeSkillsState()
+	builder.trace.Metadata.RequestedSkillNames = req.RequestedSkillNames
 	builder.trace.Todos = runtime.todoState()
+	builder.trace.EffectiveSystemPrompt = runtime.effectiveSystemPromptFor(time.Now(), builder.trace.SystemPrompt, builder.trace.Metadata)
 	trace, rawTrace, err = builder.Build(time.Now().UTC())
 	if err != nil {
 		return runID, err

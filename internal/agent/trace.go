@@ -10,20 +10,21 @@ import (
 )
 
 type StoredTrace struct {
-	SchemaVersion  int                  `json:"schema_version"`
-	RunID          string               `json:"run_id"`
-	Title          string               `json:"title"`
-	Model          string               `json:"model"`
-	Provider       string               `json:"provider,omitempty"`
-	SystemPrompt   string               `json:"system_prompt,omitempty"`
-	Todos          []StoredTodoItem     `json:"todos"`
-	Metadata       StoredRunMeta        `json:"metadata"`
-	Usage          StoredUsage          `json:"usage"`
-	EstimatedUsage StoredEstimatedUsage `json:"estimated_usage"`
-	Messages       []StoredMessage      `json:"messages"`
-	Compactions    []StoredCompaction   `json:"compactions,omitempty"`
-	CreatedAt      time.Time            `json:"created_at"`
-	UpdatedAt      time.Time            `json:"updated_at"`
+	SchemaVersion         int                  `json:"schema_version"`
+	RunID                 string               `json:"run_id"`
+	Title                 string               `json:"title"`
+	Model                 string               `json:"model"`
+	Provider              string               `json:"provider,omitempty"`
+	SystemPrompt          string               `json:"system_prompt,omitempty"`
+	EffectiveSystemPrompt string               `json:"effective_system_prompt,omitempty"`
+	Todos                 []StoredTodoItem     `json:"todos"`
+	Metadata              StoredRunMeta        `json:"metadata"`
+	Usage                 StoredUsage          `json:"usage"`
+	EstimatedUsage        StoredEstimatedUsage `json:"estimated_usage"`
+	Messages              []StoredMessage      `json:"messages"`
+	Compactions           []StoredCompaction   `json:"compactions,omitempty"`
+	CreatedAt             time.Time            `json:"created_at"`
+	UpdatedAt             time.Time            `json:"updated_at"`
 }
 
 type StoredCompaction struct {
@@ -53,14 +54,15 @@ type CompactionToolOutputRef struct {
 }
 
 type StoredRunMeta struct {
-	ParentRunID string           `json:"parent_run_id,omitempty"`
-	RootRunID   string           `json:"root_run_id,omitempty"`
-	TaskName    string           `json:"task_name,omitempty"`
-	RunKind     string           `json:"run_kind,omitempty"`
-	Mode        string           `json:"mode,omitempty"`
-	PlanRef     StoredPlanRef    `json:"plan_ref,omitempty"`
-	Tools       StoredToolState  `json:"tools"`
-	Skills      storedSkillState `json:"skills,omitempty"`
+	ParentRunID         string           `json:"parent_run_id,omitempty"`
+	RootRunID           string           `json:"root_run_id,omitempty"`
+	TaskName            string           `json:"task_name,omitempty"`
+	RunKind             string           `json:"run_kind,omitempty"`
+	Mode                string           `json:"mode,omitempty"`
+	PlanRef             StoredPlanRef    `json:"plan_ref,omitempty"`
+	Tools               StoredToolState  `json:"tools"`
+	Skills              storedSkillState `json:"skills,omitempty"`
+	RequestedSkillNames []string         `json:"requested_skill_names,omitempty"`
 }
 
 type StoredTodoItem struct {

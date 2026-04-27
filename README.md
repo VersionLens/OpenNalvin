@@ -10,6 +10,8 @@ Built on [charm.land/fantasy](https://charm.land), the Charm CLI model-interacti
 
 ![Agent run in the nalvin web UI](OpenNalvin-screenshot.png)
 
+![nalvin architecture overview](architecture.png)
+
 ## Why nalvin
 
 Most agent harnesses give the model a `run_shell` tool and hope for the best. nalvin takes a different approach:

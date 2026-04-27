@@ -53,6 +53,38 @@ func TestStoredMessagesFromFantasyMessagesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStoredTraceRoundTripsEffectiveSystemPromptAndRequestedSkillNames(t *testing.T) {
+	t.Parallel()
+
+	original := StoredTrace{
+		SchemaVersion:         2,
+		RunID:                 "run_eff",
+		Model:                 "gpt-test",
+		SystemPrompt:          "raw user prompt",
+		EffectiveSystemPrompt: "raw user prompt\n\n## Skill: alpha\n\nbody",
+		Metadata: StoredRunMeta{
+			RunKind:             RunKindRoot,
+			RequestedSkillNames: []string{"alpha", "beta"},
+		},
+		Messages: []StoredMessage{},
+	}
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+
+	trace, err := parseStoredTrace(raw)
+	if err != nil {
+		t.Fatalf("parse stored trace: %v", err)
+	}
+	if trace.EffectiveSystemPrompt != original.EffectiveSystemPrompt {
+		t.Fatalf("expected effective system prompt %q, got %q", original.EffectiveSystemPrompt, trace.EffectiveSystemPrompt)
+	}
+	if got := trace.Metadata.RequestedSkillNames; len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Fatalf("expected requested skill names [alpha beta], got %v", got)
+	}
+}
+
 func TestParseStoredTraceBackfillsDefaultProvider(t *testing.T) {
 	t.Parallel()
 
