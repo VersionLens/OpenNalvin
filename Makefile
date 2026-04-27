@@ -3,7 +3,7 @@ GOFLAGS := -tags=$(GO_TAGS)
 
 export GOFLAGS
 
-.PHONY: build build-api build-web dev dev-api dev-web test test-go test-web typecheck-web tidy clean cli
+.PHONY: build build-api build-web dev dev-api dev-web test test-go test-web typecheck-web tidy clean cli check-naming
 
 ## Build
 
@@ -28,7 +28,26 @@ dev-web:
 
 ## Test
 
-test: test-go test-web
+test: test-go test-web check-naming
+
+# check-naming fails the build if any tracked source file leaks the name of
+# the upstream project this codebase was branched off. Keep the exclude list
+# in sync with the directories actually shipped to users (no node_modules,
+# git, vendored source, or built web bundle).
+check-naming:
+	@token=$$(printf 'llm''ctl'); \
+	matches=$$(grep -rIn -e "$$token" -e "$$(printf '%s' "$$token" | tr a-z A-Z)" . \
+	  --include='*.go' --include='*.yaml' --include='*.yml' --include='*.md' \
+	  --include='*.sql' --include='*.json' --include='*.mod' --include='*.sum' \
+	  --include=Dockerfile \
+	  --exclude-dir=node_modules --exclude-dir=.git \
+	  --exclude-dir=third_party --exclude-dir=web/dist \
+	  --exclude-dir=.claude 2>/dev/null); \
+	if [ -n "$$matches" ]; then \
+	  echo "check-naming: forbidden token found"; \
+	  echo "$$matches"; \
+	  exit 1; \
+	fi
 
 test-go:
 	go test ./...
