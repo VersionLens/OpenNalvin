@@ -190,6 +190,13 @@ func (rt *agentRuntime) internalTools() []runtimeTool {
 			newParallelAgentTool("shell", shellToolDescription, rt.runShell),
 		),
 		rt.makeTool(
+			"bash",
+			sourceInternal,
+			true,
+			false,
+			newParallelAgentTool("bash", bashToolDescription, rt.runBash),
+		),
+		rt.makeTool(
 			"spawn_agent",
 			sourceInternal,
 			true,

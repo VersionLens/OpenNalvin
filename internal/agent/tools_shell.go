@@ -110,16 +110,45 @@ NOTES
   - Script changes are only written to the workspace on exit status 0
   - Default timeout is 60 seconds; override with the timeout parameter`
 
+// bashToolDescription is the description shown to the model for the bash alias.
+const bashToolDescription = `Alias for the restricted shell tool. This is not real Bash and it never runs arbitrary host commands. Use ` + "`command`" + ` for the program; ` + "`script`" + ` is accepted as an alias. Builtins and visible agent tools run against an atomic workspace snapshot. When the docker fallback is enabled, commands that are neither builtins nor agent tools are executed inside a temporary Docker container with the workspace mounted at /workspace and a sandboxed scratch dir at /tmp; otherwise such commands return "command not found". Default timeout is 60 seconds.`
+
 type shellInput struct {
 	Script  string `json:"script" description:"POSIX shell script to execute. All visible agent tools are available as commands with --flag syntax. Use pipes, redirections, variables, and control flow to compose tools."`
 	Timeout int    `json:"timeout,omitempty" description:"Optional timeout in seconds. Defaults to 60."`
 }
 
+type bashInput struct {
+	Command     string `json:"command,omitempty" description:"Restricted shell program to execute. This is an alias for script; it is not real host Bash."`
+	Script      string `json:"script,omitempty" description:"Alias for command. If both command and script are provided they must be identical."`
+	Description string `json:"description,omitempty" description:"Optional human-readable description. Accepted and ignored by execution."`
+	Timeout     int    `json:"timeout,omitempty" description:"Optional timeout in seconds. Defaults to 60."`
+}
+
 func (rt *agentRuntime) runShell(ctx context.Context, input shellInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	rt.session.debugf("tool shell script_len=%d timeout=%d", len(input.Script), input.Timeout)
+	return rt.runRestrictedShell(ctx, "shell", input.Script, input.Timeout)
+}
 
+func (rt *agentRuntime) runBash(ctx context.Context, input bashInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	command := strings.TrimSpace(input.Command)
 	script := strings.TrimSpace(input.Script)
+	if command != "" && script != "" && command != script {
+		return fantasy.NewTextErrorResponse("command and script were both provided but differ"), nil
+	}
+	if command == "" {
+		command = script
+	}
+	rt.session.debugf("tool bash command_len=%d timeout=%d description_len=%d", len(command), input.Timeout, len(input.Description))
+	return rt.runRestrictedShell(ctx, "bash", command, input.Timeout)
+}
+
+func (rt *agentRuntime) runRestrictedShell(ctx context.Context, toolName, rawScript string, timeoutSeconds int) (fantasy.ToolResponse, error) {
+	script := strings.TrimSpace(rawScript)
 	if script == "" {
+		if toolName == "bash" {
+			return fantasy.NewTextErrorResponse("command is required"), nil
+		}
 		return fantasy.NewTextErrorResponse("script is required"), nil
 	}
 
@@ -135,6 +164,14 @@ func (rt *agentRuntime) runShell(ctx context.Context, input shellInput, _ fantas
 	defer cleanupTmp()
 	if snapshotErr != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("workspace snapshot failed: %v", snapshotErr)), nil
+	}
+
+	// Per-invocation scratch dir mounted at /tmp inside the docker fallback
+	// container. Created up front so the cleanup runs even if init fails.
+	scratchDir, cleanupScratch, scratchErr := snapshotShellScratch()
+	defer cleanupScratch()
+	if scratchErr != nil {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("shell scratch tmp failed: %v", scratchErr)), nil
 	}
 
 	// Build a context with the temp dir as the active workspace.
@@ -154,7 +191,7 @@ func (rt *agentRuntime) runShell(ctx context.Context, input shellInput, _ fantas
 	}
 
 	// Apply timeout.
-	timeout := input.Timeout
+	timeout := timeoutSeconds
 	if timeout <= 0 {
 		timeout = shellDefaultTimeoutSeconds
 	}
@@ -164,10 +201,18 @@ func (rt *agentRuntime) runShell(ctx context.Context, input shellInput, _ fantas
 	// Capture output.
 	var stdout, stderr bytes.Buffer
 
+	// Lazy docker fallback container: created on first non-builtin/non-tool
+	// command and torn down at the end of this shell invocation.
+	fallback := newShellDockerFallback(rt, shellCtx, tmpDir, scratchDir)
+	defer fallback.cleanup(context.Background())
+
 	// Build the combined dispatch function for both builtins and tools.
 	// Builtins map is created first (without xargs); xargs is added after dispatch is defined.
 	builtins := rt.coreBuiltinsWithoutXargs(tmpDir)
-	dispatch := rt.makeShellDispatch(shellCtx, tmpDir, builtins)
+	dispatch := rt.makeShellDispatch(shellCtx, tmpDir, builtins, shellDispatchOptions{
+		scratchDir: scratchDir,
+		fallback:   fallback,
+	})
 	builtins["xargs"] = makeXargsBuiltin(dispatch)
 
 	runner, err := interp.New(
@@ -216,9 +261,24 @@ func (rt *agentRuntime) runShell(ctx context.Context, input shellInput, _ fantas
 	return fantasy.NewTextResponse(combined), nil
 }
 
+// shellDispatchOptions configures optional behaviors for the shell exec
+// dispatcher: a scratch dir mounted at /tmp inside the fallback container, and
+// a docker fallback used when a command is neither a builtin nor a visible
+// agent tool.
+type shellDispatchOptions struct {
+	scratchDir string
+	fallback   *shellDockerFallback
+}
+
 // makeShellDispatch creates the combined exec dispatch function for the shell.
-// It checks builtins first, then agent tools, and blocks everything else.
-func (rt *agentRuntime) makeShellDispatch(shellCtx context.Context, tmpDir string, builtins map[string]shellBuiltinFn) interp.ExecHandlerFunc {
+// Order: builtins -> blocked names (shell/bash/search_tools) -> literal `docker`
+// (scoped client) -> visible agent tools -> docker fallback (when enabled) ->
+// reject.
+func (rt *agentRuntime) makeShellDispatch(shellCtx context.Context, tmpDir string, builtins map[string]shellBuiltinFn, optionList ...shellDispatchOptions) interp.ExecHandlerFunc {
+	options := shellDispatchOptions{}
+	if len(optionList) > 0 {
+		options = optionList[0]
+	}
 	return func(ctx context.Context, args []string) error {
 		if len(args) == 0 {
 			return nil
@@ -231,15 +291,26 @@ func (rt *agentRuntime) makeShellDispatch(shellCtx context.Context, tmpDir strin
 			return fn(ctx, rest)
 		}
 
-		// 2. Check agent tools -- but block shell (recursion) and search_tools.
-		if cmdName == "shell" || cmdName == "search_tools" {
+		// 2. Block recursive shell/bash/tool-search calls.
+		if cmdName == "shell" || cmdName == "bash" || cmdName == "search_tools" {
 			hc := interp.HandlerCtx(ctx)
 			fmt.Fprintf(hc.Stderr, "shell: %s: not available inside shell\n", cmdName)
 			return interp.ExitStatus(1)
 		}
 
+		// 3. Route literal `docker` commands through the scoped Docker client.
+		if cmdName == "docker" {
+			return rt.runShellDockerCLI(shellCtx, ctx, tmpDir, rest)
+		}
+
+		// 4. Visible agent tools are also shell commands.
 		tool, ok := rt.tools[cmdName]
 		if !ok {
+			// 5. Docker fallback: run the command inside a temp container.
+			if options.fallback != nil && options.fallback.enabled() {
+				return options.fallback.exec(ctx, args)
+			}
+			// 6. Reject.
 			hc := interp.HandlerCtx(ctx)
 			fmt.Fprintf(hc.Stderr, "shell: %s: command not found\n", cmdName)
 			return interp.ExitStatus(127)

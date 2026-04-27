@@ -150,6 +150,26 @@ type AgentConfig struct {
 	Compaction  AgentCompactionConfig      `mapstructure:"compaction"`
 	MCPServers  map[string]MCPServerConfig `mapstructure:"mcp_servers"`
 	CustomTools AgentCustomToolsConfig     `mapstructure:"custom_tools"`
+	Shell       AgentShellConfig           `mapstructure:"shell"`
+}
+
+// AgentShellConfig configures the agent's restricted shell tool.
+type AgentShellConfig struct {
+	DockerFallback AgentShellDockerFallbackConfig `mapstructure:"docker_fallback"`
+}
+
+// AgentShellDockerFallbackConfig configures the transparent docker container
+// fallback used by the shell tool when a command is neither a builtin nor a
+// visible agent tool. The fallback runs the command inside a temporary
+// container with the workspace snapshot mounted at /workspace and a scratch
+// tmpfs at /tmp.
+type AgentShellDockerFallbackConfig struct {
+	// Enabled toggles the docker fallback. Defaults to true when unset.
+	Enabled bool `mapstructure:"enabled"`
+	// Image overrides cfg.Docker.DefaultImage for the fallback container.
+	Image string `mapstructure:"image"`
+	// Network controls the container's network: "on" (default) or "off".
+	Network string `mapstructure:"network"`
 }
 
 type AgentSubagentsConfig struct {
@@ -661,6 +681,18 @@ func loadAgentConfig(v *viper.Viper) AgentConfig {
 	}
 	if cfg.Compaction.MaxCompactionsPerRun <= 0 {
 		cfg.Compaction.MaxCompactionsPerRun = 8
+	}
+
+	// Shell defaults: docker fallback enabled by default unless explicitly opted out.
+	if !cfg.Shell.DockerFallback.Enabled && !v.IsSet("agent.shell.docker_fallback.enabled") {
+		cfg.Shell.DockerFallback.Enabled = true
+	}
+	cfg.Shell.DockerFallback.Image = strings.TrimSpace(cfg.Shell.DockerFallback.Image)
+	cfg.Shell.DockerFallback.Network = strings.ToLower(strings.TrimSpace(cfg.Shell.DockerFallback.Network))
+	switch cfg.Shell.DockerFallback.Network {
+	case "", "on", "off":
+	default:
+		cfg.Shell.DockerFallback.Network = ""
 	}
 
 	return cfg
