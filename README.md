@@ -24,6 +24,7 @@ Most agent harnesses give the model a `run_shell` tool and hope for the best. na
 - **Multiple local workspaces.** Each workspace is a directory plus a SQLite database. The database stores agent runs, a knowledge graph (nodes + edges with FTS and embedding columns ready for vector search / reciprocal rank fusion), scheduler state, and tool output history. Switch between workspaces with a flag.
 - **First-class sub-agents.** Inspired by [codex-rs](https://github.com/openai/codex), nalvin supports spawning child agents with independent conversation histories and tool selections. The parent communicates through `spawn_agent`, `send_input`, `wait_agent`, and `close_agent`. Children are persisted as linked run records and can use a different provider than the parent.
 - **Custom tools via embedded Go interpreter.** Drop a `.go` file in `~/.nalvin/custom-tools/` and it becomes a tool. Files are compiled at runtime by the embedded [Scriggo](https://scriggo.com) interpreter. Custom tools can call any other tool via `tool.CallTool()`, appear in `search_tools`, and work in the shell — no rebuild required.
+- **Skills system.** A skill is a `SKILL.md` (plus optional scripts and references) that activates on demand to teach the agent a specific workflow. Activation injects the skill body into the system prompt, optionally autoreveals tools, and can run scripted commands in a sandboxed container via `skill_exec`. Skills come from three layers: bundled (compiled into the binary), workspace (`<workspace>/.nalvin/skills/`), and user (`~/.nalvin/skills/`). The `skill://` URL scheme lets the agent read a skill's bundled resources through normal file tools.
 
 ## Quick Start
 
@@ -150,6 +151,90 @@ There is an experimental Flutter-based client at [VersionLens/OpenNalvin_app](ht
 
 ## Architecture
 
+### Skills
+
+A **skill** is a Markdown file (`SKILL.md`) plus optional scripts and references that teaches the agent a specific workflow. When a skill is active, its body is injected into the system prompt and any `autoreveal_tools` it lists become visible to the model without going through `search_tools`.
+
+Skills are the agent's **first stop** for figuring out how to approach a task. The intended priority is:
+
+1. **Active skills** — system-activation skills are always on; manual skills can be activated by the user (`--skill <name>`), by config (`agent.skills.default_active`), or by the agent itself mid-run via the `skill` tool when a relevant one is found.
+2. **Skill search** — `agent skills list` / `agent skills search` for the model to discover a workflow that already encodes how to approach the task (and which tools to reach for).
+3. **Tool search** — fall back to `search_tools` only when no skill covers the task and the autorevealed tool set is insufficient.
+
+Skills are loaded from three layers (later wins):
+
+1. **Bundled** — compiled into the binary under `internal/agent/skills/`.
+2. **Workspace** — `<workspace>/.nalvin/skills/<name>/` for skills shared with a specific project.
+3. **User** — `~/.nalvin/skills/<name>/` for skills available across all workspaces.
+
+The bundled set covers the common workflows a coding agent needs:
+
+| Skill | Activation | Purpose |
+|-------|------------|---------|
+| `execution-discipline` | system | Keep execution literal, concise, and scoped to the user's requested result. |
+| `workspace-and-file-access` | system | Interpret workspace questions correctly and use file tools for local paths. |
+| `research-and-tool-discovery` | system | Discover the right tools early; prefer domain-specific tools over generic workarounds. |
+| `subagent-orchestration` | system (root) | Decide when to spawn child agents; keep orchestration tight and local-first. |
+| `todo-tracking` | system (root) | Maintain a structured todo list for substantial multi-step work. |
+| `memory-management` | system (root) | Use workspace memory for ad-hoc cross-run recall; use knowledge skills for curated topic-scoped stores. |
+| `shell-composition` | manual | Use the shell tool for loops, pipelines, batching, and atomic multi-step workflows. |
+| `python-in-containers` | manual | Use `uv` instead of `pip` inside containers; bind dev servers to `0.0.0.0`. |
+| `skill-curator` | manual | Inspect, activate, and maintain managed skills safely. |
+
+`system`-activation skills inject themselves into every applicable run automatically. `manual` skills wait to be activated. `run_scopes: [root]` means the skill applies only to top-level runs (not sub-agents).
+
+Each skill has YAML frontmatter under `metadata.agent`:
+
+```yaml
+---
+name: shell-composition
+description: Use the shell tool for loops, pipelines, and atomic multi-step workflows.
+metadata:
+  agent:
+    activation: manual          # manual | system | always
+    run_scopes: [root, child]
+    autoreveal_tools: [shell, bash]
+    tool_hints: [shell]
+---
+```
+
+**`skill_exec`** runs scripts declared in a skill's optional `manifest.yaml` (`commands:`, `setup:`, `exec:` blocks) inside a per-workspace docker container (`nalvin-skill-runner-<workspace>-cmd-<sha8>`). File-based locking and lease tracking prevent concurrent collisions. Cleanup with `agent skills cleanup-containers`.
+
+**`skill://` URL scheme** lets file tools (`view`, `ls`, `glob`, `grep`) resolve paths against active skills' bundled resources:
+
+```bash
+view --path "skill://shell-composition/SKILL.md"
+glob --pattern "skill://python-in-containers/**/*.py"
+```
+
+**Skill profiles** (optional, under `metadata.agent.profile`) can override the run's provider, fallback chain, and exclusive tool set. Useful for skills that want to run a child sub-agent on a faster/cheaper model.
+
+Manage skills via the CLI:
+
+```bash
+nalvin --workspace <ws> agent skills list
+nalvin --workspace <ws> agent skills search <query>
+nalvin --workspace <ws> agent skills show <name>
+nalvin agent skills browse [query]              # remote installable skills
+nalvin agent skills install <git-url-or-path>   # install into ~/.nalvin/skills
+nalvin agent skills create <name>               # scaffold a new managed skill
+nalvin agent skills modify <name>               # edit files inside a managed skill
+nalvin --workspace <ws> agent skills cleanup-containers
+```
+
+Configure in `config.yaml`:
+
+```yaml
+agent:
+  skills:
+    enabled: true
+    user_dir: ~/.nalvin/skills
+    workspace_dir: ""             # default: <workspace>/.nalvin/skills
+    default_active:
+      - shell-composition
+      - todo-tracking
+```
+
 ### Tool System
 
 nalvin has a layered tool visibility model:
@@ -157,11 +242,11 @@ nalvin has a layered tool visibility model:
 | State | Meaning |
 |-------|---------|
 | **pinned** | Visible to the model from the first turn |
-| **hidden** | Enabled but invisible until discovered via `search_tools` |
-| **revealed** | Was hidden, now visible after a `search_tools` match |
+| **hidden** | Enabled but invisible until discovered via `search_tools` or autorevealed by an active skill |
+| **revealed** | Was hidden, now visible after a `search_tools` match or skill autoreveal |
 | **disabled** | Exists but cannot be used in this run |
 
-`search_tools` uses an in-memory FTS5 index over tool IDs, descriptions, keywords, and schema properties. Both concise keywords (`git`, `docker`) and natural-language queries (`fetch a URL`, `create a knowledge base node`) work.
+`search_tools` uses an in-memory FTS5 index over tool IDs, descriptions, keywords, and schema properties. Both concise keywords (`git`, `docker`) and natural-language queries (`fetch a URL`, `create a knowledge base node`) work. Treat `search_tools` as a fallback — if an active skill already autoreveals the right tools, use those directly.
 
 Default tool visibility:
 
@@ -506,6 +591,13 @@ nalvin --workspace <ws> agent run --verbose --timing -p "prompt"
 nalvin --workspace <ws> agent tools list
 nalvin --workspace <ws> agent tools list --json
 nalvin --workspace <ws> agent tools run <tool-id> --flag value
+
+# Skills
+nalvin --workspace <ws> agent skills list
+nalvin --workspace <ws> agent skills show <name>
+nalvin agent skills browse [query]
+nalvin agent skills install <source>
+nalvin --workspace <ws> agent run --skill shell-composition -p "..."
 
 # Provider management
 nalvin provider list
