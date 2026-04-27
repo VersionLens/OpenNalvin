@@ -27,6 +27,7 @@ var childRunRestrictedToolIDs = []string{
 	"close_agent",
 	"todowrite",
 	"todoread",
+	"bash",
 }
 
 type runtimeTool struct {

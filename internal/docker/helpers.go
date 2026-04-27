@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,6 +127,12 @@ type CreateOptions struct {
 	Workdir        string
 	Ports          []string
 	Command        []string
+	// SkipGitCredentials skips injecting nalvin-managed git SSH credentials
+	// and known_hosts mounts into the container. Used by short-lived utility
+	// containers (e.g. the shell tool's docker fallback) that do not need
+	// git push/pull access and should not require a configured git client
+	// private key.
+	SkipGitCredentials bool
 }
 
 type CreateContainerResult struct {
@@ -281,7 +288,7 @@ func (r *Runner) CreateContainer(ctx context.Context, opts CreateOptions) (Creat
 		args = append(args, "--network", network)
 	}
 
-	env, credentialMounts, err := r.createContainerEnv(opts.Env)
+	env, credentialMounts, err := r.createContainerEnv(opts.Env, opts.SkipGitCredentials)
 	if err != nil {
 		return CreateContainerResult{}, err
 	}
@@ -291,15 +298,17 @@ func (r *Runner) CreateContainer(ctx context.Context, opts CreateOptions) (Creat
 	for _, bind := range credentialMounts {
 		args = append(args, "--volume", formatBindMount(bind))
 	}
-	for _, host := range gitpkg.DockerExtraHosts(r.cfg) {
-		args = append(args, "--add-host", host)
+	if !opts.SkipGitCredentials {
+		for _, host := range gitpkg.DockerExtraHosts(r.cfg) {
+			args = append(args, "--add-host", host)
+		}
 	}
 	for _, port := range opts.Ports {
 		if p := strings.TrimSpace(port); p != "" {
 			args = append(args, "--publish", p)
 		}
 	}
-	if devImage {
+	if devImage && !opts.SkipGitCredentials {
 		for _, publish := range devPublishedPortArgs() {
 			args = append(args, "--publish", publish)
 		}
@@ -402,6 +411,56 @@ func (r *Runner) Exec(ctx context.Context, cwd, host, container string, command 
 	args = append(args, container)
 	args = append(args, command...)
 	result, err := r.runArgv(ctx, cwd, host, nil, args)
+	if err != nil {
+		return ExecResult{}, err
+	}
+
+	return ExecResult{
+		Container: container,
+		OK:        result.OK,
+		ExitCode:  result.ExitCode,
+		Stdout:    result.Stdout,
+		Stderr:    result.Stderr,
+		Argv:      result.Argv,
+		CWD:       result.CWD,
+	}, nil
+}
+
+// ExecStreamOptions configures a streaming docker-exec invocation.
+type ExecStreamOptions struct {
+	CWD       string
+	Host      string
+	Container string
+	Workdir   string
+	Command   []string
+	Stdin     io.Reader
+	Stdout    io.Writer
+	Stderr    io.Writer
+}
+
+// ExecStream runs a docker exec, optionally piping stdin into the container and
+// streaming stdout/stderr to the provided writers (in addition to capturing
+// them in the returned ExecResult). Used by the shell tool's docker fallback to
+// stream output back through the agent's interpreter.
+func (r *Runner) ExecStream(ctx context.Context, opts ExecStreamOptions) (ExecResult, error) {
+	container := strings.TrimSpace(opts.Container)
+	if container == "" {
+		return ExecResult{}, fmt.Errorf("container is required")
+	}
+	if len(opts.Command) == 0 {
+		return ExecResult{}, fmt.Errorf("exec command is required")
+	}
+
+	envDefaults := ensureExecEnvDefaults()
+	args := make([]string, 0, 3+len(envDefaults)+2+len(opts.Command))
+	args = append(args, "exec", "-i")
+	args = append(args, envDefaults...)
+	if workdir := strings.TrimSpace(opts.Workdir); workdir != "" {
+		args = append(args, "--workdir", workdir)
+	}
+	args = append(args, container)
+	args = append(args, opts.Command...)
+	result, err := r.runArgvWithIO(ctx, opts.CWD, opts.Host, nil, args, opts.Stdin, opts.Stdout, opts.Stderr)
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -679,24 +738,28 @@ func (r *Runner) runContainerAction(ctx context.Context, cwd, host, action, cont
 	return ContainerActionResult{Container: container, Result: result}, nil
 }
 
-func (r *Runner) createContainerEnv(extra map[string]string) ([]string, []BindMount, error) {
+func (r *Runner) createContainerEnv(extra map[string]string, skipGitCredentials bool) ([]string, []BindMount, error) {
 	env := map[string]string{}
-	for _, item := range gitpkg.DockerClientEnv(r.cfg) {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			env[key] = value
+	var credentialMounts []BindMount
+	if !skipGitCredentials {
+		for _, item := range gitpkg.DockerClientEnv(r.cfg) {
+			key, value, ok := strings.Cut(item, "=")
+			if ok {
+				env[key] = value
+			}
 		}
-	}
 
-	privateKeyPath := strings.TrimSpace(r.cfg.Git.DefaultClient.PrivateKeyPath)
-	if privateKeyPath == "" {
-		return nil, nil, fmt.Errorf("git default client private key path is required")
+		privateKeyPath := strings.TrimSpace(r.cfg.Git.DefaultClient.PrivateKeyPath)
+		if privateKeyPath == "" {
+			return nil, nil, fmt.Errorf("git default client private key path is required")
+		}
+		knownHostsPath, err := gitpkg.EnsureKnownHostsFile(r.cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		env["GIT_SSH_COMMAND"] = gitpkg.DefaultClientSSHCommand(containerGitKeyPath, containerKnownHostsPath)
+		credentialMounts = DockerCredentialMounts(privateKeyPath, knownHostsPath)
 	}
-	knownHostsPath, err := gitpkg.EnsureKnownHostsFile(r.cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	env["GIT_SSH_COMMAND"] = gitpkg.DefaultClientSSHCommand(containerGitKeyPath, containerKnownHostsPath)
 
 	// Default host binding for dev servers — many frameworks (Vite, Nuxt,
 	// Next.js, etc.) respect HOST or HOSTNAME and default to 127.0.0.1
@@ -718,7 +781,7 @@ func (r *Runner) createContainerEnv(extra map[string]string) ([]string, []BindMo
 	for _, key := range keys {
 		items = append(items, key+"="+env[key])
 	}
-	return items, DockerCredentialMounts(privateKeyPath, knownHostsPath), nil
+	return items, credentialMounts, nil
 }
 
 func defaultCreateCommand() []string {

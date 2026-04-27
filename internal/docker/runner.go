@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,13 @@ type RawRunOptions struct {
 	CWD           string
 	WorkspaceRoot string
 	Args          string
+	Host          string
+}
+
+type RawRunArgvOptions struct {
+	CWD           string
+	WorkspaceRoot string
+	Args          []string
 	Host          string
 }
 
@@ -62,6 +70,26 @@ func (r *Runner) Run(ctx context.Context, opts RawRunOptions) (CommandResult, er
 	return r.runArgv(ctx, cwd, strings.TrimSpace(opts.Host), nil, validated)
 }
 
+// RunArgv runs the docker subcommand expressed as a pre-tokenized argv slice.
+// The CWD/WorkspaceRoot scoping is identical to Run; only the input format differs.
+func (r *Runner) RunArgv(ctx context.Context, opts RawRunArgvOptions) (CommandResult, error) {
+	if len(opts.Args) == 0 {
+		return CommandResult{}, fmt.Errorf("docker args are required")
+	}
+
+	workspaceRoot, err := normalizeWorkspaceRoot(opts.WorkspaceRoot)
+	if err != nil {
+		return CommandResult{}, err
+	}
+
+	cwd, validated, err := validateDockerArgs(opts.CWD, workspaceRoot, append([]string(nil), opts.Args...))
+	if err != nil {
+		return CommandResult{}, err
+	}
+
+	return r.runArgv(ctx, cwd, strings.TrimSpace(opts.Host), nil, validated)
+}
+
 func (r *Runner) commandBinary() string {
 	if command := strings.TrimSpace(r.cfg.Docker.Binary); command != "" {
 		return command
@@ -77,6 +105,10 @@ func (r *Runner) effectiveHost(host string) string {
 }
 
 func (r *Runner) runArgv(ctx context.Context, cwd, host string, env []string, args []string) (CommandResult, error) {
+	return r.runArgvWithIO(ctx, cwd, host, env, args, nil, nil, nil)
+}
+
+func (r *Runner) runArgvWithIO(ctx context.Context, cwd, host string, env []string, args []string, stdin io.Reader, stdoutWriter, stderrWriter io.Writer) (CommandResult, error) {
 	if strings.TrimSpace(cwd) == "" {
 		cwd = "."
 	}
@@ -98,11 +130,22 @@ func (r *Runner) runArgv(ctx context.Context, cwd, host string, env []string, ar
 	cmd := exec.CommandContext(ctx, command, commandArgs...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), env...)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	if stdoutWriter != nil {
+		cmd.Stdout = io.MultiWriter(stdoutWriter, &stdout)
+	} else {
+		cmd.Stdout = &stdout
+	}
+	if stderrWriter != nil {
+		cmd.Stderr = io.MultiWriter(stderrWriter, &stderr)
+	} else {
+		cmd.Stderr = &stderr
+	}
 
 	result := CommandResult{
 		OK:       true,
