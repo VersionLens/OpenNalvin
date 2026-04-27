@@ -147,3 +147,11 @@ agent:
       oauth:
         callback_port: 9878
       enabled_by_default: false
+# whatsapp:
+#   enabled: false
+#   workspace: "whatsapp"
+#   session_db_path: "~/.nalvin/whatsapp/session.sqlite"
+#   agent_prefix: "\!ai"
+#   agent_require_prefix: false
+#   media_dir: "~/.nalvin/whatsapp/media"
+#   serve_addr: "127.0.0.1:8766"
