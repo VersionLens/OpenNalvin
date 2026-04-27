@@ -41,11 +41,11 @@ var discordCmd = &cobra.Command{
 		}
 
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		bot, err := discordbot.New(cfg, knowledge.New(db), logger)
+		svc, err := discordbot.New(cfg, knowledge.New(db), logger)
 		if err != nil {
 			return err
 		}
-		return bot.Run(config.WithContext(ctx, cfg))
+		return svc.Run(config.WithContext(ctx, cfg))
 	},
 }
 

@@ -63,12 +63,24 @@ type ServerConfig struct {
 }
 
 type DiscordConfig struct {
-	Enabled        bool     `mapstructure:"enabled"`
-	Token          string   `mapstructure:"token"`
-	ApplicationID  string   `mapstructure:"application_id"`
-	PublicURL      string   `mapstructure:"public_url"`
-	GuildAllowlist []string `mapstructure:"guild_allowlist"`
-	StatusMessage  string   `mapstructure:"status_message"`
+	Enabled        bool              `mapstructure:"enabled"`
+	Token          string            `mapstructure:"token"`
+	ApplicationID  string            `mapstructure:"application_id"`
+	PublicURL      string            `mapstructure:"public_url"`
+	GuildAllowlist []string          `mapstructure:"guild_allowlist"`
+	StatusMessage  string            `mapstructure:"status_message"`
+	Live           DiscordLiveConfig `mapstructure:"live"`
+}
+
+type DiscordLiveConfig struct {
+	Enabled                         bool     `mapstructure:"enabled"`
+	ProviderName                    string   `mapstructure:"provider_name"`
+	AutoJoinVoiceChannelIDs         []string `mapstructure:"auto_join_voice_channel_ids"`
+	SystemPrompt                    string   `mapstructure:"system_prompt"`
+	VoiceName                       string   `mapstructure:"voice_name"`
+	SessionResumption               bool     `mapstructure:"session_resumption"`
+	MaxSessions                     int      `mapstructure:"max_sessions"`
+	TranscriptThreadParentChannelID string   `mapstructure:"transcript_thread_parent_channel_id"`
 }
 
 type DockerConfig struct {
@@ -411,6 +423,16 @@ func Load() (Config, error) {
 			PublicURL:      strings.TrimSpace(v.GetString("discord.public_url")),
 			GuildAllowlist: normalizeOrigins(v.Get("discord.guild_allowlist")),
 			StatusMessage:  strings.TrimSpace(v.GetString("discord.status_message")),
+			Live: DiscordLiveConfig{
+				Enabled:                         v.GetBool("discord.live.enabled"),
+				ProviderName:                    strings.TrimSpace(v.GetString("discord.live.provider_name")),
+				AutoJoinVoiceChannelIDs:         normalizeOrigins(v.Get("discord.live.auto_join_voice_channel_ids")),
+				SystemPrompt:                    strings.TrimSpace(v.GetString("discord.live.system_prompt")),
+				VoiceName:                       strings.TrimSpace(v.GetString("discord.live.voice_name")),
+				SessionResumption:               v.GetBool("discord.live.session_resumption"),
+				MaxSessions:                     v.GetInt("discord.live.max_sessions"),
+				TranscriptThreadParentChannelID: strings.TrimSpace(v.GetString("discord.live.transcript_thread_parent_channel_id")),
+			},
 		},
 		Workspace: WorkspaceConfig{
 			DBRoot:    expandPath(strings.TrimSpace(v.GetString("workspace.db_root"))),
