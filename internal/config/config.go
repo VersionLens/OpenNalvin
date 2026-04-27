@@ -36,6 +36,17 @@ type Config struct {
 	Reddit    RedditConfig    `mapstructure:"reddit"`
 	Slack     SlackConfig     `mapstructure:"slack"`
 	Agent     AgentConfig     `mapstructure:"agent"`
+	WhatsApp  WhatsAppConfig  `mapstructure:"whatsapp"`
+}
+
+type WhatsAppConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`
+	Workspace          string `mapstructure:"workspace"`
+	SessionDBPath      string `mapstructure:"session_db_path"`
+	AgentPrefix        string `mapstructure:"agent_prefix"`
+	AgentRequirePrefix bool   `mapstructure:"agent_require_prefix"`
+	MediaDir           string `mapstructure:"media_dir"`
+	ServeAddr          string `mapstructure:"serve_addr"`
 }
 
 type SlackConfig struct {
@@ -422,7 +433,8 @@ func Load() (Config, error) {
 		Slack: SlackConfig{
 			UserToken: strings.TrimSpace(v.GetString("slack.user_token")),
 		},
-		Agent: agentCfg,
+		Agent:    agentCfg,
+		WhatsApp: loadWhatsAppConfig(v),
 	}
 	cfg.Git, err = loadGitConfig(v)
 	if err != nil {
@@ -557,6 +569,13 @@ func bindEnv(v *viper.Viper) {
 	_ = v.BindEnv("agent.tools.default_disabled")
 	_ = v.BindEnv("agent.tools.default_pinned")
 	_ = v.BindEnv("agent.subagents.provider_name")
+	_ = v.BindEnv("whatsapp.enabled")
+	_ = v.BindEnv("whatsapp.workspace")
+	_ = v.BindEnv("whatsapp.session_db_path")
+	_ = v.BindEnv("whatsapp.agent_prefix")
+	_ = v.BindEnv("whatsapp.agent_require_prefix")
+	_ = v.BindEnv("whatsapp.media_dir")
+	_ = v.BindEnv("whatsapp.serve_addr")
 }
 
 func applyDotEnvDefaults(v *viper.Viper) error {
@@ -753,6 +772,34 @@ func loadAgentConfig(v *viper.Viper) AgentConfig {
 		cfg.Shell.DockerFallback.Network = ""
 	}
 
+	return cfg
+}
+
+func loadWhatsAppConfig(v *viper.Viper) WhatsAppConfig {
+	cfg := WhatsAppConfig{
+		Enabled:            v.GetBool("whatsapp.enabled"),
+		Workspace:          strings.TrimSpace(v.GetString("whatsapp.workspace")),
+		SessionDBPath:      expandPath(strings.TrimSpace(v.GetString("whatsapp.session_db_path"))),
+		AgentPrefix:        strings.TrimSpace(v.GetString("whatsapp.agent_prefix")),
+		AgentRequirePrefix: v.GetBool("whatsapp.agent_require_prefix"),
+		MediaDir:           expandPath(strings.TrimSpace(v.GetString("whatsapp.media_dir"))),
+		ServeAddr:          strings.TrimSpace(v.GetString("whatsapp.serve_addr")),
+	}
+	if cfg.Workspace == "" {
+		cfg.Workspace = "whatsapp"
+	}
+	if cfg.SessionDBPath == "" {
+		cfg.SessionDBPath = filepath.Join(configDir(), "whatsapp", "session.sqlite")
+	}
+	if cfg.AgentPrefix == "" {
+		cfg.AgentPrefix = "!ai"
+	}
+	if cfg.MediaDir == "" {
+		cfg.MediaDir = filepath.Join(configDir(), "whatsapp", "media")
+	}
+	if cfg.ServeAddr == "" {
+		cfg.ServeAddr = "127.0.0.1:8766"
+	}
 	return cfg
 }
 
