@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/google/uuid"
@@ -729,6 +730,14 @@ func newFantasyProvider(cfg ProviderConfig) (fantasy.Provider, error) {
 			opts = append(opts, openaicompat.WithUserAgent(cfg.UserAgentOverride))
 		}
 		return openaicompat.New(opts...)
+	case ProviderTypeVertex:
+		opts := []google.Option{
+			google.WithVertex(cfg.Project, cfg.Location),
+		}
+		if strings.TrimSpace(cfg.UserAgentOverride) != "" {
+			opts = append(opts, google.WithUserAgent(cfg.UserAgentOverride))
+		}
+		return google.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", cfg.Type)
 	}
@@ -764,6 +773,18 @@ func fantasyProviderOptions(cfg ProviderConfig) (fantasy.ProviderOptions, error)
 		return openaicompat.NewProviderOptions(&openaicompat.ProviderOptions{
 			ReasoningEffort: &openAIEffort,
 		}), nil
+	case ProviderTypeVertex:
+		if effort == "none" {
+			return nil, nil
+		}
+		level := strings.ToUpper(effort)
+		return fantasy.ProviderOptions{
+			google.Name: &google.ProviderOptions{
+				ThinkingConfig: &google.ThinkingConfig{
+					ThinkingLevel: &level,
+				},
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", cfg.Type)
 	}

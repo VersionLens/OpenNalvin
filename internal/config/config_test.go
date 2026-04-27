@@ -959,6 +959,140 @@ func TestSaveMCPServerValidation(t *testing.T) {
 	}
 }
 
+func TestSaveProviderNormalizesMistralAlias(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	if err := SaveProvider("", "mistral", ProviderConfig{
+		Type:   ProviderTypeMistral,
+		APIKey: "secret-key",
+	}, false); err != nil {
+		t.Fatalf("save mistral provider: %v", err)
+	}
+
+	configPath := filepath.Join(home, ".nalvin", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+
+	doc := map[string]any{}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal config file: %v", err)
+	}
+	providers := doc["providers"].(map[string]any)
+	mistralProvider := providers["mistral"].(map[string]any)
+	if mistralProvider["type"] != ProviderTypeOpenAICompat {
+		t.Fatalf("unexpected providers.mistral.type: %#v", mistralProvider["type"])
+	}
+	if mistralProvider["base_url"] != MistralDefaultBaseURL {
+		t.Fatalf("unexpected providers.mistral.base_url: %#v", mistralProvider["base_url"])
+	}
+	if mistralProvider["model"] != MistralDefaultModel {
+		t.Fatalf("unexpected providers.mistral.model: %#v", mistralProvider["model"])
+	}
+	if got := viper.GetString("providers.mistral.type"); got != ProviderTypeOpenAICompat {
+		t.Fatalf("unexpected provider type in viper: %q", got)
+	}
+	if got := viper.GetString("providers.mistral.base_url"); got != MistralDefaultBaseURL {
+		t.Fatalf("unexpected provider base_url in viper: %q", got)
+	}
+}
+
+func TestSaveProviderVertexRequiresProjectAndLocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	err := SaveProvider("", "gemini", ProviderConfig{
+		Type:     ProviderTypeVertex,
+		Location: "us-central1",
+		Model:    "gemini-3-pro-preview",
+	}, false)
+	if err == nil || err.Error() != `provider "gemini": project is required for type "vertex"` {
+		t.Fatalf("unexpected missing project error: %v", err)
+	}
+
+	err = SaveProvider("", "gemini", ProviderConfig{
+		Type:    ProviderTypeVertex,
+		Project: "my-project",
+		Model:   "gemini-3-pro-preview",
+	}, false)
+	if err == nil || err.Error() != `provider "gemini": location is required for type "vertex"` {
+		t.Fatalf("unexpected missing location error: %v", err)
+	}
+
+	if err := SaveProvider("", "gemini", ProviderConfig{
+		Type:     ProviderTypeVertex,
+		Project:  "my-project",
+		Location: "us-central1",
+		Model:    "gemini-3-pro-preview",
+	}, false); err != nil {
+		t.Fatalf("save vertex provider: %v", err)
+	}
+
+	configPath := filepath.Join(home, ".nalvin", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "api_key:") {
+		t.Fatalf("did not expect api_key for vertex, got %q", text)
+	}
+	if !strings.Contains(text, "project: my-project") {
+		t.Fatalf("expected project in config file, got %q", text)
+	}
+	if !strings.Contains(text, "location: us-central1") {
+		t.Fatalf("expected location in config file, got %q", text)
+	}
+}
+
+func TestOpenCodeGoRouteForModel(t *testing.T) {
+	cases := []struct {
+		input        string
+		wantModel    string
+		wantType     string
+		wantBaseURL  string
+		expectsError bool
+	}{
+		{input: "opencode-go/deepseek-v4-pro", wantModel: "deepseek-v4-pro", wantType: ProviderTypeOpenAICompat, wantBaseURL: OpenCodeGoDefaultBaseURL},
+		{input: "opencode-go/deepseek-v4-flash", wantModel: "deepseek-v4-flash", wantType: ProviderTypeOpenAICompat, wantBaseURL: OpenCodeGoDefaultBaseURL},
+		{input: "opencode-go/glm-5.1", wantModel: "glm-5.1", wantType: ProviderTypeOpenAICompat, wantBaseURL: OpenCodeGoDefaultBaseURL},
+		{input: "opencode-go/kimi-k2.6", wantModel: "kimi-k2.6", wantType: ProviderTypeOpenAICompat, wantBaseURL: OpenCodeGoDefaultBaseURL},
+		{input: "opencode-go/mimo-v2.5-pro", wantModel: "mimo-v2.5-pro", wantType: ProviderTypeOpenAICompat, wantBaseURL: OpenCodeGoDefaultBaseURL},
+		{input: "opencode-go/minimax-m2.7", wantModel: "minimax-m2.7", wantType: ProviderTypeAnthropic, wantBaseURL: OpenCodeGoAnthropicDefaultBaseURL},
+		{input: "opencode-go/qwen3.6-plus", wantModel: "qwen3.6-plus", wantType: ProviderTypeAnthropic, wantBaseURL: OpenCodeGoAnthropicDefaultBaseURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			route, err := OpenCodeGoRouteForModel(tc.input)
+			if err != nil {
+				t.Fatalf("route %q: %v", tc.input, err)
+			}
+			if route.Model != tc.wantModel {
+				t.Fatalf("model: got %q want %q", route.Model, tc.wantModel)
+			}
+			if route.Type != tc.wantType {
+				t.Fatalf("type: got %q want %q", route.Type, tc.wantType)
+			}
+			if route.BaseURL != tc.wantBaseURL {
+				t.Fatalf("base_url: got %q want %q", route.BaseURL, tc.wantBaseURL)
+			}
+		})
+	}
+}
+
+func TestOpenCodeGoRouteForModelRejectsUnknownModel(t *testing.T) {
+	_, err := OpenCodeGoRouteForModel("opencode-go/not-a-model")
+	if err == nil || !strings.Contains(err.Error(), `unsupported OpenCode Go model "not-a-model"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNormalizeMCPOAuthDefaults(t *testing.T) {
 	servers := map[string]MCPServerConfig{
 		"test": {

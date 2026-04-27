@@ -6,6 +6,26 @@ providers:
     api_key: ""
     model: ""
     tool_output_token_limit: 4000
+  # Example: Vertex AI (Google Cloud). Uses application default credentials,
+  # no api_key required. Both project and location are mandatory.
+  # vertex-example:
+  #   type: vertex
+  #   project: "my-gcp-project"
+  #   location: "us-central1"
+  #   model: "gemini-3-pro-preview"
+  #   reasoning_effort: medium
+  # Example: Mistral. Type "mistral" is normalized to "openai_compat" with
+  # base_url and model defaults. The api_key is still required.
+  # mistral-example:
+  #   type: mistral
+  #   api_key: "${MISTRAL_API_KEY}"
+  #   # base_url: https://api.mistral.ai/v1     # default applied automatically
+  #   # model: mistral-small-latest             # default applied automatically
+  # Example: OpenCode Go routing. Use the opencode-go/<id> model prefix and
+  # the type / base_url are inferred automatically (no need to set them).
+  # opencode-go-example:
+  #   model: "opencode-go/kimi-k2.6"
+  #   api_key: "${OPENCODE_GO_API_KEY}"
 server:
   addr: "0.0.0.0:4210"
   allowed_origins:

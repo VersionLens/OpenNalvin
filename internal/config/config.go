@@ -217,6 +217,8 @@ type ProviderConfig struct {
 	BaseURL              string `mapstructure:"base_url" yaml:"base_url,omitempty"`
 	APIKey               string `mapstructure:"api_key" yaml:"api_key,omitempty"`
 	Model                string `mapstructure:"model" yaml:"model,omitempty"`
+	Project              string `mapstructure:"project" yaml:"project,omitempty"`
+	Location             string `mapstructure:"location" yaml:"location,omitempty"`
 	UserAgentOverride    string `mapstructure:"user_agent_override" yaml:"user_agent_override,omitempty"`
 	ReasoningEffort      string `mapstructure:"reasoning_effort" yaml:"reasoning_effort,omitempty"`
 	ToolOutputTokenLimit int    `mapstructure:"tool_output_token_limit" yaml:"tool_output_token_limit,omitempty"`
@@ -235,6 +237,8 @@ const (
 	ProviderTypeOpenAI       = "openai"
 	ProviderTypeOpenAICompat = "openai_compat"
 	ProviderTypeAnthropic    = "anthropic"
+	ProviderTypeVertex       = "vertex"
+	ProviderTypeMistral      = "mistral"
 )
 
 var providerReasoningEfforts = map[string][]string{
@@ -260,6 +264,39 @@ var providerReasoningEfforts = map[string][]string{
 		"high",
 		"max",
 	},
+	ProviderTypeVertex: {
+		"none",
+		"minimal",
+		"low",
+		"medium",
+		"high",
+	},
+}
+
+const (
+	OpenCodeGoDefaultBaseURL          = "https://opencode.ai/zen/go/v1"
+	OpenCodeGoAnthropicDefaultBaseURL = "https://opencode.ai/zen/go"
+	OpenCodeGoModelPrefix             = "opencode-go/"
+	MistralDefaultBaseURL             = "https://api.mistral.ai/v1"
+	MistralDefaultModel               = "mistral-small-latest"
+)
+
+// OpenCodeGoModelRoute describes how an OpenCode Go model identifier is
+// rewritten into a concrete provider type and base URL.
+type OpenCodeGoModelRoute struct {
+	Model   string
+	Type    string
+	BaseURL string
+}
+
+var openCodeGoModelBackends = map[string]string{
+	"deepseek-v4-pro":   ProviderTypeOpenAICompat,
+	"deepseek-v4-flash": ProviderTypeOpenAICompat,
+	"glm-5.1":           ProviderTypeOpenAICompat,
+	"kimi-k2.6":         ProviderTypeOpenAICompat,
+	"mimo-v2.5-pro":     ProviderTypeOpenAICompat,
+	"minimax-m2.7":      ProviderTypeAnthropic,
+	"qwen3.6-plus":      ProviderTypeAnthropic,
 }
 
 const defaultAgentJobTimeout = 30 * time.Minute
@@ -1099,18 +1136,34 @@ func SaveProvider(configFile, name string, provider ProviderConfig, overwrite bo
 	}
 
 	provider = normalizeProviderConfig(provider)
-	reasoningErr := validateProviderReasoningEffort(provider.Type, provider.ReasoningEffort)
-	switch {
-	case !isSupportedProviderType(provider.Type):
+	if !isSupportedProviderType(provider.Type) {
 		return fmt.Errorf("provider %q: unsupported type %q", name, provider.Type)
-	case provider.Type == ProviderTypeOpenAICompat && provider.BaseURL == "":
-		return fmt.Errorf("provider %q: base_url is required for type %q", name, provider.Type)
-	case reasoningErr != nil:
-		return fmt.Errorf("provider %q: %w", name, reasoningErr)
-	case provider.APIKey == "":
-		return fmt.Errorf("provider %q: api_key is required", name)
-	case provider.Model == "":
+	}
+	if provider.Model == "" {
 		return fmt.Errorf("provider %q: model is required", name)
+	}
+	if reasoningErr := validateProviderReasoningEffort(provider.Type, provider.ReasoningEffort); reasoningErr != nil {
+		return fmt.Errorf("provider %q: %w", name, reasoningErr)
+	}
+	switch provider.Type {
+	case ProviderTypeVertex:
+		if provider.Project == "" {
+			return fmt.Errorf("provider %q: project is required for type %q", name, provider.Type)
+		}
+		if provider.Location == "" {
+			return fmt.Errorf("provider %q: location is required for type %q", name, provider.Type)
+		}
+	case ProviderTypeOpenAICompat:
+		if provider.BaseURL == "" {
+			return fmt.Errorf("provider %q: base_url is required for type %q", name, provider.Type)
+		}
+		if provider.APIKey == "" {
+			return fmt.Errorf("provider %q: api_key is required", name)
+		}
+	default:
+		if provider.APIKey == "" {
+			return fmt.Errorf("provider %q: api_key is required", name)
+		}
 	}
 
 	path := expandPath(strings.TrimSpace(configFile))
@@ -1132,12 +1185,20 @@ func SaveProvider(configFile, name string, provider ProviderConfig, overwrite bo
 	}
 
 	entry := map[string]any{
-		"type":    provider.Type,
-		"api_key": provider.APIKey,
-		"model":   provider.Model,
+		"type":  provider.Type,
+		"model": provider.Model,
+	}
+	if provider.APIKey != "" {
+		entry["api_key"] = provider.APIKey
 	}
 	if provider.BaseURL != "" {
 		entry["base_url"] = provider.BaseURL
+	}
+	if provider.Project != "" {
+		entry["project"] = provider.Project
+	}
+	if provider.Location != "" {
+		entry["location"] = provider.Location
 	}
 	if provider.UserAgentOverride != "" {
 		entry["user_agent_override"] = provider.UserAgentOverride
@@ -1165,6 +1226,8 @@ func SaveProvider(configFile, name string, provider ProviderConfig, overwrite bo
 	v.Set(prefix+".base_url", provider.BaseURL)
 	v.Set(prefix+".api_key", provider.APIKey)
 	v.Set(prefix+".model", provider.Model)
+	v.Set(prefix+".project", provider.Project)
+	v.Set(prefix+".location", provider.Location)
 	v.Set(prefix+".user_agent_override", provider.UserAgentOverride)
 	v.Set(prefix+".reasoning_effort", provider.ReasoningEffort)
 	v.Set(prefix+".tool_output_token_limit", provider.ToolOutputTokenLimit)
@@ -1402,12 +1465,23 @@ func ListMCPServers() map[string]MCPServerConfig {
 }
 
 func normalizeProviderConfig(provider ProviderConfig) ProviderConfig {
+	rawType := strings.TrimSpace(strings.ToLower(provider.Type))
 	provider.Type = normalizeProviderType(provider.Type)
 	provider.BaseURL = strings.TrimSpace(provider.BaseURL)
 	provider.APIKey = strings.TrimSpace(provider.APIKey)
 	provider.Model = strings.TrimSpace(provider.Model)
+	provider.Project = strings.TrimSpace(provider.Project)
+	provider.Location = strings.TrimSpace(provider.Location)
 	provider.UserAgentOverride = strings.TrimSpace(provider.UserAgentOverride)
 	provider.ReasoningEffort = NormalizeProviderReasoningEffort(provider.ReasoningEffort)
+	if rawType == ProviderTypeMistral {
+		if provider.BaseURL == "" {
+			provider.BaseURL = MistralDefaultBaseURL
+		}
+		if provider.Model == "" {
+			provider.Model = MistralDefaultModel
+		}
+	}
 	return provider
 }
 
@@ -1418,6 +1492,8 @@ func loadProviderConfig(v *viper.Viper, name string) ProviderConfig {
 		BaseURL:              v.GetString(prefix + ".base_url"),
 		APIKey:               v.GetString(prefix + ".api_key"),
 		Model:                v.GetString(prefix + ".model"),
+		Project:              v.GetString(prefix + ".project"),
+		Location:             v.GetString(prefix + ".location"),
 		UserAgentOverride:    v.GetString(prefix + ".user_agent_override"),
 		ReasoningEffort:      v.GetString(prefix + ".reasoning_effort"),
 		ToolOutputTokenLimit: v.GetInt(prefix + ".tool_output_token_limit"),
@@ -1430,6 +1506,9 @@ func NormalizeProviderType(value string) string {
 	if value == "" {
 		return ProviderTypeOpenAICompat
 	}
+	if value == ProviderTypeMistral {
+		return ProviderTypeOpenAICompat
+	}
 	return value
 }
 
@@ -1439,11 +1518,56 @@ func normalizeProviderType(value string) string {
 
 func IsSupportedProviderType(value string) bool {
 	switch NormalizeProviderType(value) {
-	case ProviderTypeOpenAI, ProviderTypeOpenAICompat, ProviderTypeAnthropic:
+	case ProviderTypeOpenAI, ProviderTypeOpenAICompat, ProviderTypeAnthropic, ProviderTypeVertex:
 		return true
 	default:
 		return false
 	}
+}
+
+// NormalizeOpenCodeGoModelID strips the OpenCode Go prefix from a model id.
+func NormalizeOpenCodeGoModelID(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.TrimPrefix(model, OpenCodeGoModelPrefix)
+	return strings.TrimSpace(model)
+}
+
+// IsOpenCodeGoModelID reports whether model uses the opencode-go/<id> prefix.
+func IsOpenCodeGoModelID(model string) bool {
+	return strings.HasPrefix(strings.TrimSpace(model), OpenCodeGoModelPrefix)
+}
+
+// OpenCodeGoRouteForModel resolves an opencode-go/<id> identifier to its
+// concrete provider type, base URL, and stripped model name.
+func OpenCodeGoRouteForModel(model string) (OpenCodeGoModelRoute, error) {
+	model = NormalizeOpenCodeGoModelID(model)
+	if model == "" {
+		return OpenCodeGoModelRoute{}, fmt.Errorf("OpenCode Go model is required")
+	}
+	backend, ok := openCodeGoModelBackends[model]
+	if !ok {
+		return OpenCodeGoModelRoute{}, fmt.Errorf("unsupported OpenCode Go model %q (supported: %s)", model, strings.Join(OpenCodeGoModelIDs(), ", "))
+	}
+	route := OpenCodeGoModelRoute{
+		Model: model,
+		Type:  backend,
+	}
+	if backend == ProviderTypeAnthropic {
+		route.BaseURL = OpenCodeGoAnthropicDefaultBaseURL
+	} else {
+		route.BaseURL = OpenCodeGoDefaultBaseURL
+	}
+	return route, nil
+}
+
+// OpenCodeGoModelIDs returns the supported opencode-go model ids in lexical order.
+func OpenCodeGoModelIDs() []string {
+	out := make([]string, 0, len(openCodeGoModelBackends))
+	for model := range openCodeGoModelBackends {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func isSupportedProviderType(value string) bool {

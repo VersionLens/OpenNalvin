@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/versionlens/OpenNalvin/internal/config"
 	"github.com/versionlens/OpenNalvin/internal/output"
-	"github.com/spf13/cobra"
 )
 
 var (
@@ -15,6 +15,8 @@ var (
 	providerAddModel           string
 	providerAddType            string
 	providerAddReasoningEffort string
+	providerAddProject         string
+	providerAddLocation        string
 	providerAddOverwrite       bool
 )
 
@@ -23,6 +25,8 @@ type providerListItem struct {
 	Type                 string `json:"type"`
 	BaseURL              string `json:"base_url,omitempty"`
 	Model                string `json:"model,omitempty"`
+	Project              string `json:"project,omitempty"`
+	Location             string `json:"location,omitempty"`
 	UserAgentOverride    string `json:"user_agent_override,omitempty"`
 	ReasoningEffort      string `json:"reasoning_effort,omitempty"`
 	APIKeyConfigured     bool   `json:"api_key_configured"`
@@ -37,6 +41,8 @@ type providerAddPayload struct {
 	Type             string `json:"type"`
 	BaseURL          string `json:"base_url"`
 	Model            string `json:"model"`
+	Project          string `json:"project,omitempty"`
+	Location         string `json:"location,omitempty"`
 	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
 	APIKeyConfigured bool   `json:"api_key_configured"`
 	ConfigPath       string `json:"config_path"`
@@ -82,6 +88,12 @@ var providerListCmd = &cobra.Command{
 			if item.Model != "" {
 				w.Line("  model: %s", item.Model)
 			}
+			if item.Project != "" {
+				w.Line("  project: %s", item.Project)
+			}
+			if item.Location != "" {
+				w.Line("  location: %s", item.Location)
+			}
 			if item.UserAgentOverride != "" {
 				w.Line("  user_agent_override: %s", item.UserAgentOverride)
 			}
@@ -94,7 +106,9 @@ var providerListCmd = &cobra.Command{
 			if item.ContextWindowTokens > 0 {
 				w.Line("  context_window_tokens: %d", item.ContextWindowTokens)
 			}
-			if item.APIKeyConfigured {
+			if item.Type == config.ProviderTypeVertex {
+				w.Line("  auth: application default credentials")
+			} else if item.APIKeyConfigured {
 				w.Line("  api_key: configured")
 			} else {
 				w.Line("  api_key: missing")
@@ -109,12 +123,35 @@ var providerAddCmd = &cobra.Command{
 	Short: "Add a model provider to ~/.nalvin/config.yaml",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		providerType := strings.TrimSpace(strings.ToLower(providerAddType))
+		rawProviderType := strings.TrimSpace(strings.ToLower(providerAddType))
+		providerType := config.NormalizeProviderType(rawProviderType)
 		baseURL := strings.TrimSpace(providerAddBaseURL)
 		model := strings.TrimSpace(providerAddModel)
+		project := strings.TrimSpace(providerAddProject)
+		location := strings.TrimSpace(providerAddLocation)
 		reasoningEffort := config.NormalizeProviderReasoningEffort(providerAddReasoningEffort)
-		if providerType == "" {
-			providerType = config.ProviderTypeOpenAICompat
+		if rawProviderType == config.ProviderTypeMistral {
+			if baseURL == "" {
+				baseURL = config.MistralDefaultBaseURL
+			}
+			if model == "" {
+				model = config.MistralDefaultModel
+			}
+		}
+		if config.IsOpenCodeGoModelID(model) {
+			route, err := config.OpenCodeGoRouteForModel(model)
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("type") && providerType != route.Type {
+				return fmt.Errorf("OpenCode Go model %q requires provider type %q, got %q", model, route.Type, providerType)
+			}
+			if baseURL != "" && strings.TrimRight(baseURL, "/") != strings.TrimRight(route.BaseURL, "/") {
+				return fmt.Errorf("OpenCode Go model %q requires base_url %q, got %q", model, route.BaseURL, baseURL)
+			}
+			providerType = route.Type
+			baseURL = route.BaseURL
+			model = route.Model
 		}
 		if !config.IsSupportedProviderType(providerType) {
 			return fmt.Errorf("unsupported provider type %q", providerType)
@@ -122,19 +159,31 @@ var providerAddCmd = &cobra.Command{
 		if providerType == config.ProviderTypeOpenAICompat && baseURL == "" {
 			return fmt.Errorf("provide a base URL with --base-url")
 		}
-		if err := config.ValidateProviderReasoningEffort(providerType, reasoningEffort); err != nil {
-			return err
+		if providerType == config.ProviderTypeVertex {
+			if project == "" {
+				return fmt.Errorf("provide a GCP project with --project")
+			}
+			if location == "" {
+				return fmt.Errorf("provide a GCP location with --location")
+			}
 		}
 		if model == "" {
 			return fmt.Errorf("provide a model with --model")
 		}
-
-		apiKey, err := promptForSecret(cmd.InOrStdin(), cmd.ErrOrStderr(), "API key: ")
-		if err != nil {
-			return fmt.Errorf("read api key: %w", err)
+		if err := config.ValidateProviderReasoningEffort(providerType, reasoningEffort); err != nil {
+			return err
 		}
-		if apiKey == "" {
-			return fmt.Errorf("api key is required")
+
+		var apiKey string
+		if providerType != config.ProviderTypeVertex {
+			var err error
+			apiKey, err = promptForSecret(cmd.InOrStdin(), cmd.ErrOrStderr(), "API key: ")
+			if err != nil {
+				return fmt.Errorf("read api key: %w", err)
+			}
+			if apiKey == "" {
+				return fmt.Errorf("api key is required")
+			}
 		}
 
 		if err := config.SaveProvider(cfgFile, args[0], config.ProviderConfig{
@@ -142,6 +191,8 @@ var providerAddCmd = &cobra.Command{
 			BaseURL:         baseURL,
 			APIKey:          apiKey,
 			Model:           model,
+			Project:         project,
+			Location:        location,
 			ReasoningEffort: reasoningEffort,
 		}, providerAddOverwrite); err != nil {
 			return err
@@ -152,8 +203,10 @@ var providerAddCmd = &cobra.Command{
 			Type:             providerType,
 			BaseURL:          baseURL,
 			Model:            model,
+			Project:          project,
+			Location:         location,
 			ReasoningEffort:  reasoningEffort,
-			APIKeyConfigured: true,
+			APIKeyConfigured: apiKey != "",
 			ConfigPath:       resolvedConfigPath(),
 			Overwritten:      providerAddOverwrite,
 		}
@@ -170,9 +223,11 @@ var providerAddCmd = &cobra.Command{
 }
 
 func init() {
-	providerAddCmd.Flags().StringVar(&providerAddBaseURL, "base-url", "", "provider base URL override (required for type openai_compat)")
-	providerAddCmd.Flags().StringVar(&providerAddType, "type", config.ProviderTypeOpenAICompat, "provider type: openai, openai_compat, or anthropic")
+	providerAddCmd.Flags().StringVar(&providerAddBaseURL, "base-url", "", "provider base URL override (required for type openai_compat unless --type mistral or --model uses opencode-go/)")
+	providerAddCmd.Flags().StringVar(&providerAddType, "type", config.ProviderTypeOpenAICompat, "provider type: openai, openai_compat, anthropic, vertex, or mistral")
 	providerAddCmd.Flags().StringVar(&providerAddModel, "model", "", "default model to use for the provider")
+	providerAddCmd.Flags().StringVar(&providerAddProject, "project", "", "GCP project ID (required for type vertex)")
+	providerAddCmd.Flags().StringVar(&providerAddLocation, "location", "", "GCP location, e.g. us-central1 (required for type vertex)")
 	providerAddCmd.Flags().StringVar(&providerAddReasoningEffort, "reasoning-effort", "", "provider reasoning effort override")
 	providerAddCmd.Flags().BoolVar(&providerAddOverwrite, "overwrite", false, "replace an existing provider entry with the same name")
 
@@ -193,6 +248,8 @@ func listConfiguredProviders() []providerListItem {
 			Type:                 provider.Type,
 			BaseURL:              provider.BaseURL,
 			Model:                provider.Model,
+			Project:              provider.Project,
+			Location:             provider.Location,
 			UserAgentOverride:    provider.UserAgentOverride,
 			ReasoningEffort:      provider.ReasoningEffort,
 			APIKeyConfigured:     provider.APIKey != "",
@@ -213,11 +270,17 @@ func listConfiguredProviders() []providerListItem {
 }
 
 func providerHasUserConfiguration(provider config.ProviderConfig) bool {
-	return provider.BaseURL != "" || provider.APIKey != "" || provider.Model != ""
+	return provider.BaseURL != "" || provider.APIKey != "" || provider.Model != "" || provider.Project != "" || provider.Location != ""
 }
 
 func providerIsComplete(provider config.ProviderConfig) bool {
-	if provider.APIKey == "" || provider.Model == "" {
+	if provider.Model == "" {
+		return false
+	}
+	if provider.Type == config.ProviderTypeVertex {
+		return provider.Project != "" && provider.Location != ""
+	}
+	if provider.APIKey == "" {
 		return false
 	}
 	if provider.Type == config.ProviderTypeAnthropic || provider.Type == config.ProviderTypeOpenAI {
