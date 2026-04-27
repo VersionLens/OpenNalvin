@@ -42,19 +42,20 @@ type ToolSelection struct {
 }
 
 type RunRequest struct {
-	Message      string
-	RunID        string
-	Title        string
-	ProviderName string
-	SystemPrompt string
-	History      []fantasy.Message
-	ParentRunID  string
-	RootRunID    string
-	TaskName     string
-	RunKind      string
-	Mode         string
-	PlanRef      StoredPlanRef
-	Tools        ToolSelection
+	Message             string
+	RunID               string
+	Title               string
+	ProviderName        string
+	SystemPrompt        string
+	History             []fantasy.Message
+	ParentRunID         string
+	RootRunID           string
+	TaskName            string
+	RunKind             string
+	Mode                string
+	PlanRef             StoredPlanRef
+	Tools               ToolSelection
+	RequestedSkillNames []string
 }
 
 // ToolResultEvent carries tool result data for streaming consumers.

@@ -172,10 +172,12 @@ func (rt *agentRuntime) extractEPUB(ctx context.Context, input extractEPUBInput,
 func (rt *agentRuntime) viewFile(ctx context.Context, input viewInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	rt.session.debugf("tool view path=%q offset=%d limit=%d", input.Path, input.Offset, input.Limit)
 
-	_, relativePath, absolutePath, err := workspacepkg.ResolveFilePath(ctx, rt.cfg, input.Path, false)
+	resolved, err := rt.resolveReadablePath(ctx, input.Path, false)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
+	relativePath := resolved.DisplayPath
+	absolutePath := resolved.AbsolutePath
 
 	info, err := os.Stat(absolutePath)
 	if err != nil {
@@ -244,10 +246,12 @@ func (rt *agentRuntime) viewFile(ctx context.Context, input viewInput, _ fantasy
 func (rt *agentRuntime) listFiles(ctx context.Context, input lsInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	rt.session.debugf("tool ls path=%q depth=%d", input.Path, input.Depth)
 
-	_, relativePath, absolutePath, err := workspacepkg.ResolveFilePath(ctx, rt.cfg, defaultRootPath(input.Path), true)
+	resolved, err := rt.resolveReadableRoot(ctx, input.Path)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
+	relativePath := resolved.DisplayPath
+	absolutePath := resolved.AbsolutePath
 
 	info, err := os.Stat(absolutePath)
 	if err != nil {
@@ -299,12 +303,8 @@ func (rt *agentRuntime) listFiles(ctx context.Context, input lsInput, _ fantasy.
 		if entry.IsDir() {
 			kind = "directory"
 		}
-		joinedPath := filepath.ToSlash(filepath.Join(relativePath, relToRoot))
-		if relativePath == "." {
-			joinedPath = filepath.ToSlash(relToRoot)
-		}
 		entries = append(entries, lsEntry{
-			Path: joinedPath,
+			Path: displayJoinedResolvedPath(resolved.DisplayPath, filepath.ToSlash(relToRoot)),
 			Kind: kind,
 		})
 		return nil
@@ -328,10 +328,12 @@ func (rt *agentRuntime) globFiles(ctx context.Context, input globInput, _ fantas
 		return fantasy.NewTextErrorResponse("pattern is required"), nil
 	}
 
-	_, relativePath, absolutePath, err := workspacepkg.ResolveFilePath(ctx, rt.cfg, defaultRootPath(input.Path), true)
+	resolved, err := rt.resolveReadableRoot(ctx, input.Path)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
+	relativePath := resolved.DisplayPath
+	absolutePath := resolved.AbsolutePath
 
 	info, err := os.Stat(absolutePath)
 	if err != nil {
@@ -374,11 +376,7 @@ func (rt *agentRuntime) globFiles(ctx context.Context, input globInput, _ fantas
 				truncated = true
 				return nil
 			}
-			if relativePath == "." {
-				results = append(results, candidate)
-			} else {
-				results = append(results, filepath.ToSlash(filepath.Join(relativePath, candidate)))
-			}
+			results = append(results, displayJoinedResolvedPath(resolved.DisplayPath, candidate))
 		}
 		return nil
 	})
@@ -402,12 +400,12 @@ func (rt *agentRuntime) grepFiles(ctx context.Context, input grepInput, _ fantas
 		return fantasy.NewTextErrorResponse("pattern is required"), nil
 	}
 
-	paths, relativePath, absolutePath, err := workspacepkg.ResolveFilePath(ctx, rt.cfg, defaultRootPath(input.Path), true)
+	resolved, err := rt.resolveReadableRoot(ctx, input.Path)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
 
-	info, err := os.Stat(absolutePath)
+	info, err := os.Stat(resolved.AbsolutePath)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
@@ -425,9 +423,33 @@ func (rt *agentRuntime) grepFiles(ctx context.Context, input grepInput, _ fantas
 		}
 	}
 
-	matches, truncated, err := grepWithRipgrep(paths.FilesPath, relativePath, input, includePattern, limit)
+	// Skills paths are resolved against an arbitrary skill directory; ripgrep
+	// is best when we can use the workspace root as cwd.
+	var (
+		matches   []grepMatch
+		truncated bool
+	)
+	usingSkillPath := strings.HasPrefix(strings.TrimSpace(input.Path), activeSkillPathScheme)
+	if !usingSkillPath {
+		paths, _, absolutePath, perr := workspacepkg.ResolveFilePath(ctx, rt.cfg, defaultRootPath(input.Path), true)
+		if perr == nil && pathWithinRoot(paths.FilesPath, absolutePath) {
+			relForRoot, relErr := filepath.Rel(paths.FilesPath, absolutePath)
+			if relErr == nil {
+				relForRoot = filepath.ToSlash(relForRoot)
+				matches, truncated, err = grepWithRipgrep(paths.FilesPath, relForRoot, input, includePattern, limit)
+			} else {
+				err = relErr
+			}
+		} else if perr != nil {
+			err = perr
+		} else {
+			err = fmt.Errorf("path is outside the workspace root")
+		}
+	} else {
+		err = fmt.Errorf("use go-grep for skill paths")
+	}
 	if err != nil {
-		matches, truncated, err = grepWithGo(relativePath, absolutePath, info.IsDir(), input, includePattern, limit)
+		matches, truncated, err = grepWithGo(resolved.DisplayPath, resolved.AbsolutePath, info.IsDir(), input, includePattern, limit)
 	}
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -435,7 +457,7 @@ func (rt *agentRuntime) grepFiles(ctx context.Context, input grepInput, _ fantas
 
 	return jsonToolResponse(map[string]any{
 		"pattern":      input.Pattern,
-		"path":         relativePath,
+		"path":         resolved.DisplayPath,
 		"include":      strings.TrimSpace(input.Include),
 		"literal_text": input.LiteralText,
 		"matches":      matches,

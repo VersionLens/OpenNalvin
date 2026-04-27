@@ -50,6 +50,15 @@ type SkillDescriptor struct {
 	HasScripts        bool     `json:"has_scripts,omitempty"`
 	ContainerSkillDir string   `json:"container_skill_dir,omitempty"`
 	Active            bool     `json:"active"`
+
+	// Managed skill metadata (set when the skill lives under ~/.nalvin/skills).
+	Managed         bool     `json:"managed,omitempty"`
+	ThirdParty      bool     `json:"third_party,omitempty"`
+	LocallyModified bool     `json:"locally_modified,omitempty"`
+	InstallSource   string   `json:"install_source,omitempty"`
+	InstallRef      string   `json:"install_ref,omitempty"`
+	ResourcePaths   []string `json:"resource_paths,omitempty"`
+	ExecutionPolicy string   `json:"execution_policy,omitempty"`
 }
 
 // SkillCatalogResult is the JSON wire format for skills list/search.
@@ -72,6 +81,20 @@ type skillMetadata struct {
 	HasScripts        bool
 	ContainerSkillDir string
 
+	// Managed skill metadata.
+	Managed           bool
+	ThirdParty        bool
+	LocallyModified   bool
+	InstallSource     string
+	InstallRef        string
+	ResourcePaths     []string
+	ExecutionPolicy   string
+	ReadTools         []string
+	SkillPathExamples []string
+
+	// Profile skill metadata; nil for non-profile skills.
+	Profile *skillProfile
+
 	// Extended manifest fields (from manifest.yaml alongside SKILL.md).
 	Commands      []skillCommandManifest
 	SetupSteps    []skillSetupStep
@@ -80,9 +103,18 @@ type skillMetadata struct {
 	ExecWritable  bool
 }
 
+type skillProfile struct {
+	Provider          string
+	FallbackProviders []string
+	EnabledTools      []string
+	PinnedTools       []string
+	ExclusiveTools    []string
+}
+
 type activeSkill struct {
 	Name              string   `json:"name"`
 	Reason            string   `json:"reason,omitempty"`
+	Activation        string   `json:"activation,omitempty"` // legacy traces only
 	Source            string   `json:"source,omitempty"`
 	Path              string   `json:"path,omitempty"`
 	SkillDir          string   `json:"skill_dir,omitempty"`
@@ -90,6 +122,17 @@ type activeSkill struct {
 	AutorevealTools   []string `json:"autoreveal_tools,omitempty"`
 	HasScripts        bool     `json:"has_scripts,omitempty"`
 	ContainerSkillDir string   `json:"container_skill_dir,omitempty"`
+
+	// Managed skill metadata, persisted on resume so the next run knows what
+	// kind of skill it just rehydrated.
+	Managed         bool     `json:"managed,omitempty"`
+	ThirdParty      bool     `json:"third_party,omitempty"`
+	LocallyModified bool     `json:"locally_modified,omitempty"`
+	InstallSource   string   `json:"install_source,omitempty"`
+	InstallRef      string   `json:"install_ref,omitempty"`
+	ResourcePaths   []string `json:"resource_paths,omitempty"`
+	ExecutionPolicy string   `json:"execution_policy,omitempty"`
+	ReadTools       []string `json:"read_tools,omitempty"`
 }
 
 type storedSkillState struct {
@@ -104,12 +147,21 @@ type skillFrontmatter struct {
 	ToolHints   any    `yaml:"tool_hints,omitempty"`
 	Metadata    struct {
 		Agent struct {
-			Activation      string `yaml:"activation,omitempty"`
-			RunScopes       any    `yaml:"run_scopes,omitempty"`
-			ToolHints       any    `yaml:"tool_hints,omitempty"`
-			AutorevealTools any    `yaml:"autoreveal_tools,omitempty"`
+			Activation      string                  `yaml:"activation,omitempty"`
+			RunScopes       any                     `yaml:"run_scopes,omitempty"`
+			ToolHints       any                     `yaml:"tool_hints,omitempty"`
+			AutorevealTools any                     `yaml:"autoreveal_tools,omitempty"`
+			Profile         skillProfileFrontmatter `yaml:"profile,omitempty"`
 		} `yaml:"agent,omitempty"`
 	} `yaml:"metadata,omitempty"`
+}
+
+type skillProfileFrontmatter struct {
+	Provider          string `yaml:"provider,omitempty"`
+	FallbackProviders any    `yaml:"fallback_providers,omitempty"`
+	EnabledTools      any    `yaml:"enabled_tools,omitempty"`
+	PinnedTools       any    `yaml:"pinned_tools,omitempty"`
+	ExclusiveTools    any    `yaml:"exclusive_tools,omitempty"`
 }
 
 type skillManager struct {
@@ -118,11 +170,19 @@ type skillManager struct {
 	runKind    string
 	allTools   map[string]struct{}
 
-	mu       sync.Mutex
-	catalog  map[string]skillMetadata
-	active   map[string]activeSkill
-	warnings []string
-	loaded   bool
+	mu            sync.Mutex
+	catalog       map[string]skillMetadata
+	active        map[string]activeSkill
+	warnings      []string
+	loaded        bool
+	instructions  []promptInstruction
+	projectLoaded bool
+}
+
+type promptInstruction struct {
+	Title string
+	Body  string
+	Path  string
 }
 
 func newSkillManager(ctx context.Context, cfg configpkg.Config, runKind string, tools map[string]runtimeTool, stored storedSkillState) *skillManager {
@@ -165,7 +225,50 @@ func (sm *skillManager) initialize() {
 	}
 	sm.loaded = true
 	sm.loadCatalogLocked()
+	sm.loadProjectInstructionsLocked()
 	sm.activateSystemSkillsLocked()
+}
+
+// loadProjectInstructionsLocked reads <workspace>/AGENTS.md (when present) and
+// adds it to sm.instructions so it can be injected into the system prompt.
+// Only AGENTS.md is honoured.
+func (sm *skillManager) loadProjectInstructionsLocked() {
+	if sm.projectLoaded {
+		return
+	}
+	sm.projectLoaded = true
+	paths, err := workspacepkg.ActivePaths(sm.ctx, sm.cfg)
+	if err != nil {
+		return
+	}
+	candidates := []string{
+		filepath.Join(paths.FilesPath, "AGENTS.md"),
+	}
+	for _, candidate := range candidates {
+		data, readErr := os.ReadFile(candidate)
+		if readErr != nil {
+			continue
+		}
+		body := strings.TrimSpace(string(data))
+		if body == "" {
+			continue
+		}
+		sm.instructions = append(sm.instructions, promptInstruction{
+			Title: filepath.Base(candidate),
+			Body:  body,
+			Path:  candidate,
+		})
+	}
+}
+
+// projectInstructions returns the loaded project-instruction blocks.
+func (sm *skillManager) projectInstructions() []promptInstruction {
+	sm.initialize()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	out := make([]promptInstruction, len(sm.instructions))
+	copy(out, sm.instructions)
+	return out
 }
 
 func (sm *skillManager) loadCatalogLocked() {
@@ -215,6 +318,14 @@ func (sm *skillManager) activateLocked(skill skillMetadata, reason string) {
 		AutorevealTools:   append([]string(nil), skill.AutorevealTools...),
 		HasScripts:        skill.HasScripts,
 		ContainerSkillDir: skill.ContainerSkillDir,
+		Managed:           skill.Managed,
+		ThirdParty:        skill.ThirdParty,
+		LocallyModified:   skill.LocallyModified,
+		InstallSource:     skill.InstallSource,
+		InstallRef:        skill.InstallRef,
+		ResourcePaths:     append([]string(nil), skill.ResourcePaths...),
+		ExecutionPolicy:   skill.ExecutionPolicy,
+		ReadTools:         append([]string(nil), skill.ReadTools...),
 	}
 }
 
@@ -466,6 +577,9 @@ func loadSkillDirectory(rootDir, source string) ([]skillMetadata, []string) {
 		}
 		skill.SkillDir = skillDir
 
+		// Enrich with managed-skill manifest (.nalvin-skill.json) when present.
+		warnings = append(warnings, enrichManagedSkillMetadata(&skill, skillDir, source)...)
+
 		// Pick up optional manifest.yaml for declared commands and exec config.
 		ext, extErr := readSkillExtendedManifest(skillDir)
 		if extErr != nil {
@@ -511,6 +625,7 @@ func parseSkillMarkdown(raw, resolvedPath, source string) (skillMetadata, error)
 	runScopes := normalizeSkillScopes(meta.Metadata.Agent.RunScopes, meta.RunScopes)
 	toolHints := normalizeSkillStringList(meta.Metadata.Agent.ToolHints, meta.ToolHints)
 	autoreveal := normalizeSkillStringList(meta.Metadata.Agent.AutorevealTools)
+	profile := normalizeSkillProfile(meta.Metadata.Agent.Profile)
 	return skillMetadata{
 		Name:            name,
 		Description:     description,
@@ -522,7 +637,43 @@ func parseSkillMarkdown(raw, resolvedPath, source string) (skillMetadata, error)
 		ToolHints:       toolHints,
 		AutorevealTools: autoreveal,
 		Body:            strings.TrimSpace(body),
+		Profile:         profile,
 	}, nil
+}
+
+func normalizeSkillProfile(raw skillProfileFrontmatter) *skillProfile {
+	provider := strings.TrimSpace(raw.Provider)
+	if provider != "" {
+		provider = normalizeProviderName(provider)
+	}
+	profile := skillProfile{
+		Provider:          provider,
+		FallbackProviders: normalizeProviderNames(normalizeProfileStringList(raw.FallbackProviders)),
+		EnabledTools:      normalizeProfileStringList(raw.EnabledTools),
+		PinnedTools:       normalizeProfileStringList(raw.PinnedTools),
+		ExclusiveTools:    normalizeProfileStringList(raw.ExclusiveTools),
+	}
+	if profile.Provider == "" && len(profile.FallbackProviders) == 0 && len(profile.EnabledTools) == 0 && len(profile.PinnedTools) == 0 && len(profile.ExclusiveTools) == 0 {
+		return nil
+	}
+	return &profile
+}
+
+func normalizeProfileStringList(value any) []string {
+	var items []string
+	switch typed := value.(type) {
+	case string:
+		items = strings.Split(typed, ",")
+	case []string:
+		items = append(items, typed...)
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				items = append(items, text)
+			}
+		}
+	}
+	return trimStringValues(items)
 }
 
 func splitMarkdownFrontmatter(raw string) (string, string, error) {
@@ -651,6 +802,13 @@ func describeSkill(skill skillMetadata, active bool) SkillDescriptor {
 		HasScripts:        skill.HasScripts,
 		ContainerSkillDir: skill.ContainerSkillDir,
 		Active:            active,
+		Managed:           skill.Managed,
+		ThirdParty:        skill.ThirdParty,
+		LocallyModified:   skill.LocallyModified,
+		InstallSource:     skill.InstallSource,
+		InstallRef:        skill.InstallRef,
+		ResourcePaths:     append([]string(nil), skill.ResourcePaths...),
+		ExecutionPolicy:   skill.ExecutionPolicy,
 	}
 }
 

@@ -53,13 +53,14 @@ type CompactionToolOutputRef struct {
 }
 
 type StoredRunMeta struct {
-	ParentRunID string          `json:"parent_run_id,omitempty"`
-	RootRunID   string          `json:"root_run_id,omitempty"`
-	TaskName    string          `json:"task_name,omitempty"`
-	RunKind     string          `json:"run_kind,omitempty"`
-	Mode        string          `json:"mode,omitempty"`
-	PlanRef     StoredPlanRef   `json:"plan_ref,omitempty"`
-	Tools       StoredToolState `json:"tools"`
+	ParentRunID string           `json:"parent_run_id,omitempty"`
+	RootRunID   string           `json:"root_run_id,omitempty"`
+	TaskName    string           `json:"task_name,omitempty"`
+	RunKind     string           `json:"run_kind,omitempty"`
+	Mode        string           `json:"mode,omitempty"`
+	PlanRef     StoredPlanRef    `json:"plan_ref,omitempty"`
+	Tools       StoredToolState  `json:"tools"`
+	Skills      storedSkillState `json:"skills,omitempty"`
 }
 
 type StoredTodoItem struct {

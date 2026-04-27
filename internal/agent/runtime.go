@@ -259,11 +259,23 @@ func newAgentRuntime(
 	return rt, nil
 }
 
-// parseStoredSkillState extracts persisted skill state from a stored trace.
-// Skills aren't stored in OpenNalvin's StoredTrace today; this returns the
-// zero value so the manager hydrates from the live catalog.
-func parseStoredSkillState(_ StoredTrace) storedSkillState {
-	return storedSkillState{}
+// parseStoredSkillState extracts persisted skill state from a stored trace
+// so that manual skill activations survive --resume.
+func parseStoredSkillState(trace StoredTrace) storedSkillState {
+	state := trace.Metadata.Skills
+	if state.Active == nil {
+		state.Active = []activeSkill{}
+	}
+	cleaned := make([]activeSkill, 0, len(state.Active))
+	for _, item := range state.Active {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		item.Name = name
+		cleaned = append(cleaned, item)
+	}
+	return storedSkillState{Active: cleaned}
 }
 
 // applyActiveSkillAutoreveals reveals each active skill's autoreveal_tools
@@ -517,6 +529,47 @@ func (rt *agentRuntime) toolState() StoredToolState {
 		PinnedIDs:   rt.pinnedToolIDs(),
 		RevealedIDs: rt.revealedToolIDs(),
 	}
+}
+
+// activeSkillsState returns the snapshot of currently active skills for
+// persistence in the stored trace, so that --resume rehydrates them.
+func (rt *agentRuntime) activeSkillsState() storedSkillState {
+	if rt == nil || rt.skills == nil {
+		return storedSkillState{}
+	}
+	return rt.skills.storedState()
+}
+
+// composeSystemPromptAdditions returns extra blocks (project instructions
+// from AGENTS.md, then full bodies of currently active skills) to append to
+// the run's system prompt.
+func (rt *agentRuntime) composeSystemPromptAdditions() string {
+	if rt == nil || rt.skills == nil {
+		return ""
+	}
+	var sections []string
+	for _, item := range rt.skills.projectInstructions() {
+		body := strings.TrimSpace(item.Body)
+		if body == "" {
+			continue
+		}
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = "Project Instructions"
+		}
+		sections = append(sections, "## "+title+"\n\n"+body)
+	}
+	for _, active := range rt.skills.activeMetadata() {
+		body := strings.TrimSpace(active.Body)
+		if body == "" {
+			continue
+		}
+		sections = append(sections, "## Skill: "+active.Name+"\n\n"+body)
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(sections, "\n\n")
 }
 
 func (rt *agentRuntime) close() error {

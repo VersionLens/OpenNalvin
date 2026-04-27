@@ -184,6 +184,28 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		providerName = trace.Provider
 	}
 
+	// Apply skill-profile resolution when the run has explicitly requested
+	// skills (--skill <name>). Profile skills can shape the initial provider
+	// and tool defaults of the run.
+	if cfg, _ := configpkg.FromContext(ctx); len(req.RequestedSkillNames) > 0 {
+		runKindHint := strings.TrimSpace(req.RunKind)
+		if runKindHint == "" {
+			if strings.TrimSpace(req.ParentRunID) != "" {
+				runKindHint = RunKindChild
+			} else {
+				runKindHint = RunKindRoot
+			}
+		}
+		nextProvider, _, nextTools, _, perr := ResolveSkillProfileRunConfig(ctx, cfg, runKindHint, req.RequestedSkillNames, providerName, req.Tools)
+		if perr != nil {
+			return "", perr
+		}
+		if nextProvider != "" {
+			providerName = nextProvider
+		}
+		req.Tools = nextTools
+	}
+
 	providerCfg, err := LoadProviderConfig(providerName)
 	if err != nil {
 		return "", err
@@ -284,6 +306,17 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 	defer runtime.close()
 	runtime.setProviderConfig(providerCfg)
 
+	// Activate skills explicitly requested for this run so their bodies and
+	// autoreveal_tools take effect from the first step.
+	if runtime.skills != nil {
+		for _, name := range req.RequestedSkillNames {
+			if _, actErr := runtime.skills.activateManual(name); actErr != nil {
+				session.debugf("activate requested skill %q: %v", name, actErr)
+			}
+		}
+		runtime.applyActiveSkillAutoreveals()
+	}
+
 	// Initialize compaction manager.
 	cfg, _ := configpkg.FromContext(ctx)
 	if cfg.Agent.Compaction.Enabled {
@@ -297,7 +330,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 			cfg,
 			contextWindow,
 			model,
-			effectiveSystemPromptForRunContextAt(time.Now(), req.SystemPrompt, session.metadata()),
+			effectiveSystemPromptForRunContextAt(time.Now(), req.SystemPrompt, session.metadata())+runtime.composeSystemPromptAdditions(),
 			providerOptions,
 			counter,
 			session.debugf,
@@ -310,11 +343,13 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 
 	trace.Metadata = session.metadata()
 	trace.Metadata.Tools = runtime.toolState()
+	trace.Metadata.Skills = runtime.activeSkillsState()
 	trace.Todos = runtime.todoState()
 	builder := newTraceBuilder(trace)
 	builder.AddUserMessage(req.Message)
 	builder.trace.Metadata = session.metadata()
 	builder.trace.Metadata.Tools = runtime.toolState()
+	builder.trace.Metadata.Skills = runtime.activeSkillsState()
 	builder.trace.Todos = runtime.todoState()
 	runtime.compactionTrace = &builder.trace
 
@@ -367,6 +402,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		}
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
+		builder.trace.Metadata.Skills = runtime.activeSkillsState()
 		builder.trace.Todos = runtime.todoState()
 		progressTrace, progressRawTrace, buildErr := builder.Snapshot(time.Now().UTC())
 		if buildErr != nil {
@@ -403,7 +439,9 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 	}
 
 	var agentOpts []fantasy.AgentOption
-	agentOpts = append(agentOpts, fantasy.WithSystemPrompt(effectiveSystemPromptForRunContextAt(time.Now(), trace.SystemPrompt, session.metadata())))
+	systemPrompt := effectiveSystemPromptForRunContextAt(time.Now(), trace.SystemPrompt, session.metadata())
+	systemPrompt += runtime.composeSystemPromptAdditions()
+	agentOpts = append(agentOpts, fantasy.WithSystemPrompt(systemPrompt))
 	agentOpts = append(agentOpts, fantasy.WithTools(runtime.activeTools()...))
 
 	start := time.Now()
@@ -516,6 +554,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 			builder.OnToolResult(tr)
 			builder.trace.Metadata = session.metadata()
 			builder.trace.Metadata.Tools = runtime.toolState()
+			builder.trace.Metadata.Skills = runtime.activeSkillsState()
 			builder.trace.Todos = runtime.todoState()
 			persistProgress(true)
 			metadata := parseToolResultClientMetadata(tr.ClientMetadata)
@@ -574,6 +613,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		builder.AddUserMessage(nudge)
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
+		builder.trace.Metadata.Skills = runtime.activeSkillsState()
 		builder.trace.Todos = runtime.todoState()
 		retryHistory := traceToFantasyMessages(builder.trace)
 		streamCall.Prompt = ""
@@ -621,6 +661,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 		}
 		builder.trace.Metadata = session.metadata()
 		builder.trace.Metadata.Tools = runtime.toolState()
+		builder.trace.Metadata.Skills = runtime.activeSkillsState()
 		builder.trace.Todos = runtime.todoState()
 		trace, rawTrace, buildErr := builder.Build(time.Now().UTC())
 		if buildErr == nil {
@@ -662,6 +703,7 @@ func Run(ctx context.Context, store *knowledge.Store, req RunRequest, opts RunOp
 
 	builder.trace.Metadata = session.metadata()
 	builder.trace.Metadata.Tools = runtime.toolState()
+	builder.trace.Metadata.Skills = runtime.activeSkillsState()
 	builder.trace.Todos = runtime.todoState()
 	trace, rawTrace, err = builder.Build(time.Now().UTC())
 	if err != nil {

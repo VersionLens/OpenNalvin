@@ -25,6 +25,7 @@ var (
 	agentRunTiming           bool
 	agentRunContextWindow    int
 	agentRunMode             string
+	agentRunSkills           []string
 )
 
 func requestedAgentRunMode(cmd *cobra.Command) string {
@@ -73,5 +74,6 @@ func init() {
 	agentRunCmd.Flags().BoolVar(&agentRunTiming, "timing", false, "print timing breakdown for queue wait, first streamed output, and first content token")
 	agentRunCmd.Flags().IntVar(&agentRunContextWindow, "context-window", 0, "override context window size in tokens (for testing compaction)")
 	agentRunCmd.Flags().StringVar(&agentRunMode, "mode", "", "run mode override: default or plan")
+	agentRunCmd.Flags().StringSliceVar(&agentRunSkills, "skill", nil, "attach a skill to this run by name (repeatable). Skills with profile metadata can shape the run's provider and tool defaults.")
 	agentCmd.AddCommand(agentRunCmd)
 }

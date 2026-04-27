@@ -210,6 +210,11 @@ type AgentSkillsConfig struct {
 
 type AgentSubagentsConfig struct {
 	ProviderName string `mapstructure:"provider_name"`
+
+	// Per-skill provider overrides for skill-profile resolution. Keys are
+	// skill names; values are provider names from providers.<name>.
+	SkillProfileProviders         map[string]string   `mapstructure:"skill_profile_providers"`
+	SkillProfileFallbackProviders map[string][]string `mapstructure:"skill_profile_fallback_providers"`
 }
 
 type AgentCustomToolsConfig struct {
