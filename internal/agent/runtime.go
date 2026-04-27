@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"charm.land/fantasy"
 	"github.com/google/uuid"
@@ -17,6 +18,11 @@ const (
 	sourceInternal = "internal"
 	sourceMCP      = "mcp"
 	sourceCustom   = "custom"
+	sourceSkill    = "skill"
+)
+
+const (
+	revealSourceSkillActivation = "skill"
 )
 
 var childRunRestrictedToolIDs = []string{
@@ -58,6 +64,10 @@ type agentRuntime struct {
 	tools      map[string]runtimeTool
 	state      resolvedToolState
 	mcpManager *mcpServerManager
+
+	skills        *skillManager
+	skillExec     *skillExecutor
+	skillExecOnce sync.Once
 
 	toolOutputTokenLimit int
 	compaction           *compactionManager
@@ -220,8 +230,72 @@ func newAgentRuntime(
 		rt.removeRestrictedSubAgentTools()
 	}
 
+	// Wire skills runtime when enabled. Skills load from embedded assets,
+	// the user dir, and any workspace skill dir; system-activation skills are
+	// activated immediately. Skill-declared command tools are registered now
+	// so they show up in the catalog before tool-state resolution.
+	if rt.cfg.Agent.Skills.Enabled {
+		runKind := session.metadata().RunKind
+		if runKind == "" {
+			if rt.isChild {
+				runKind = RunKindChild
+			} else {
+				runKind = RunKindRoot
+			}
+		}
+		rt.skills = newSkillManager(ctx, cfg, runKind, rt.tools, parseStoredSkillState(trace))
+		rt.skills.initialize()
+		// Activate any default-active skills configured by the user.
+		for _, name := range rt.cfg.Agent.Skills.DefaultActive {
+			_, _ = rt.skills.activateManual(name)
+		}
+		rt.warnings = append(rt.warnings, rt.skills.catalogWarnings()...)
+		rt.registerSkillCommandTools()
+	}
+
 	rt.state = rt.resolveToolState(trace, selection)
+	rt.applyActiveSkillAutoreveals()
 	return rt, nil
+}
+
+// parseStoredSkillState extracts persisted skill state from a stored trace.
+// Skills aren't stored in OpenNalvin's StoredTrace today; this returns the
+// zero value so the manager hydrates from the live catalog.
+func parseStoredSkillState(_ StoredTrace) storedSkillState {
+	return storedSkillState{}
+}
+
+// applyActiveSkillAutoreveals reveals each active skill's autoreveal_tools
+// when the tool exists, is enabled, is not already pinned, and has not yet
+// been revealed. Mirrors the gate from the source project.
+func (rt *agentRuntime) applyActiveSkillAutoreveals() {
+	if rt.skills == nil {
+		return
+	}
+	for _, active := range rt.skills.activeMetadata() {
+		ids := active.AutorevealTools
+		if len(ids) == 0 {
+			if meta, ok := rt.lookupSkillMetadata(active.Name); ok {
+				ids = append(ids, meta.AutorevealTools...)
+				ids = append(ids, skillCommandToolIDs(meta)...)
+			}
+		}
+		for _, id := range ids {
+			if _, ok := rt.tools[id]; !ok {
+				continue
+			}
+			if _, enabled := rt.state.enabled[id]; !enabled {
+				continue
+			}
+			if _, pinned := rt.state.pinned[id]; pinned {
+				continue
+			}
+			if _, revealed := rt.state.revealed[id]; revealed {
+				continue
+			}
+			rt.state.revealed[id] = struct{}{}
+		}
+	}
 }
 
 func (rt *agentRuntime) resolveToolState(trace StoredTrace, selection ToolSelection) resolvedToolState {
@@ -445,7 +519,11 @@ func (rt *agentRuntime) toolState() StoredToolState {
 }
 
 func (rt *agentRuntime) close() error {
-	if rt == nil || rt.mcpManager == nil {
+	if rt == nil {
+		return nil
+	}
+	rt.teardownSkillContainers(context.Background())
+	if rt.mcpManager == nil {
 		return nil
 	}
 	return rt.mcpManager.Close()

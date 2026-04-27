@@ -122,6 +122,11 @@ agent:
     max_stored_bytes: 4194304
     default_page_lines: 200
     grep_default_limit: 100
+  # skills:
+  #   enabled: true
+  #   user_dir: "~/.nalvin/skills"
+  #   workspace_dir: ""        # defaults to <workspace>/.nalvin/skills
+  #   default_active: []       # skill names to activate at run start
   mcp_servers:
     deepwiki:
       transport: streamable_http
