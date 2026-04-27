@@ -42,20 +42,21 @@ type Options struct {
 }
 
 type Request struct {
-	RunID           string
-	ClientRequestID string
-	Message         string
-	Title           string
-	SystemPrompt    string
-	Model           string
-	ProviderName    string
-	ParentRunID     string
-	RootRunID       string
-	TaskName        string
-	RunKind         string
-	Mode            string
-	PlanRef         agentpkg.StoredPlanRef
-	Tools           agentpkg.ToolSelection
+	RunID               string
+	ClientRequestID     string
+	Message             string
+	Title               string
+	SystemPrompt        string
+	Model               string
+	ProviderName        string
+	ParentRunID         string
+	RootRunID           string
+	TaskName            string
+	RunKind             string
+	Mode                string
+	PlanRef             agentpkg.StoredPlanRef
+	Tools               agentpkg.ToolSelection
+	RequestedSkillNames []string
 }
 
 type ExecutionOptions struct {
@@ -66,6 +67,10 @@ type ExecutionOptions struct {
 	WorkerID              string
 	ContextWindowOverride int
 	EventSink             EventSink
+	// RequestedSkillNames are skills explicitly attached for this run by the
+	// caller, e.g. via `agent run --skill <name>`. Profile skills can shape the
+	// run's provider and tool defaults.
+	RequestedSkillNames []string
 }
 
 type PreparedTurn struct {
@@ -684,6 +689,7 @@ func (s *Service) executePreparedTurn(ctx context.Context, run *knowledge.AgentR
 			PinToolIDs:     append([]string(nil), turn.PinToolIDs...),
 			UnpinToolIDs:   append([]string(nil), turn.UnpinToolIDs...),
 		},
+		RequestedSkillNames: append([]string(nil), opts.RequestedSkillNames...),
 	}, agentpkg.RunOptions{
 		Out:                   opts.Out,
 		Status:                opts.Status,

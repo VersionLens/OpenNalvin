@@ -163,6 +163,7 @@ func runAttachedAgent(ctx context.Context, cmd *cobra.Command) error {
 		Verbose:               agentRunVerbose,
 		EventSink:             agentrun.MultiSink(timingSink, planReadySink),
 		ContextWindowOverride: agentRunContextWindow,
+		RequestedSkillNames:   append([]string(nil), agentRunSkills...),
 	})
 	if timing != nil {
 		if turn, turnErr := store.GetAgentRunTurn(ctx, prepared.Turn.TurnID); turnErr == nil {
