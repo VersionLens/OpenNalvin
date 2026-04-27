@@ -133,6 +133,12 @@ type todoWriteInput struct {
 
 type planExitInput struct{}
 
+type skillToolInput struct {
+	Action string `json:"action,omitempty" jsonschema_description:"One of: list, search, activate, deactivate. Defaults to list."`
+	Query  string `json:"query,omitempty" jsonschema_description:"Skill name (for activate/deactivate) or free-text query (for search)."`
+	Limit  int    `json:"limit,omitempty" jsonschema_description:"Optional max results when action is search."`
+}
+
 type todoSummary struct {
 	Items      []StoredTodoItem `json:"items"`
 	Total      int              `json:"total"`
@@ -422,7 +428,24 @@ func (rt *agentRuntime) internalTools() []runtimeTool {
 		),
 	)
 	tools = append(tools, rt.gitTools()...)
-	return append(tools, rt.dockerTools()...)
+	tools = append(tools, rt.dockerTools()...)
+	tools = append(tools,
+		rt.makeTool(
+			"skill",
+			sourceInternal,
+			true,
+			false,
+			newParallelAgentTool("skill", "List, search, activate, or deactivate installed agent skills. Activating a skill auto-reveals its declared tools when those tools are already enabled in the run.", rt.skillTool),
+		),
+		rt.makeTool(
+			"skill_exec",
+			sourceInternal,
+			true,
+			false,
+			newParallelAgentTool("skill_exec", "Run an ad-hoc argv inside an active skill's container. Prefer the auto-registered per-command tools when available.", rt.skillExecTool),
+		),
+	)
+	return tools
 }
 
 func (rt *agentRuntime) makeTool(id, source string, defaultEnabled, defaultPinned bool, tool fantasy.AgentTool) runtimeTool {
@@ -1074,6 +1097,57 @@ func encodeAttributes(values map[string]any) string {
 		return ""
 	}
 	return string(payload)
+}
+
+func (rt *agentRuntime) skillTool(_ context.Context, input skillToolInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	if rt.skills == nil {
+		return fantasy.NewTextErrorResponse("skills are not enabled in this run"), nil
+	}
+	action := strings.ToLower(strings.TrimSpace(input.Action))
+	if action == "" {
+		action = "list"
+	}
+	switch action {
+	case "list":
+		return jsonToolResponse(SkillCatalogResult{
+			Skills:   rt.skills.skillSummaries(),
+			Warnings: rt.skills.catalogWarnings(),
+		})
+	case "search":
+		return jsonToolResponse(SkillCatalogResult{
+			Skills: rt.skills.search(input.Query, input.Limit),
+		})
+	case "activate":
+		name := strings.TrimSpace(input.Query)
+		if name == "" {
+			return fantasy.NewTextErrorResponse("query (skill name) is required for activate"), nil
+		}
+		meta, err := rt.skills.activateManual(name)
+		if err != nil {
+			return fantasy.NewTextErrorResponse(err.Error()), nil
+		}
+		// Reveal autoreveal_tools and any declared command tools.
+		ids := append([]string(nil), meta.AutorevealTools...)
+		ids = append(ids, skillCommandToolIDs(meta)...)
+		revealed := rt.revealTools(ids...)
+		return jsonToolResponse(map[string]any{
+			"activated":         meta.Name,
+			"reason":            skillActiveReasonManual,
+			"revealed_tool_ids": revealed,
+		})
+	case "deactivate":
+		name := strings.TrimSpace(input.Query)
+		if name == "" {
+			return fantasy.NewTextErrorResponse("query (skill name) is required for deactivate"), nil
+		}
+		removed := rt.skills.deactivate(name)
+		return jsonToolResponse(map[string]any{
+			"deactivated": name,
+			"removed":     removed,
+		})
+	default:
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("unsupported skill action %q", input.Action)), nil
+	}
 }
 
 func jsonToolResponse(value any) (fantasy.ToolResponse, error) {

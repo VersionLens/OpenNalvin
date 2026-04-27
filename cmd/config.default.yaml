@@ -150,6 +150,11 @@ agent:
   #     enabled: true        # default true; set false to disable the fallback
   #     image: ""           # overrides docker.default_image when non-empty
   #     network: "on"       # "on" (default) or "off" to disable container networking
+  # skills:
+  #   enabled: true
+  #   user_dir: "~/.nalvin/skills"
+  #   workspace_dir: ""        # defaults to <workspace>/.nalvin/skills
+  #   default_active: []       # skill names to activate at run start
   mcp_servers:
     deepwiki:
       transport: streamable_http

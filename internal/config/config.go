@@ -151,6 +151,7 @@ type AgentConfig struct {
 	MCPServers  map[string]MCPServerConfig `mapstructure:"mcp_servers"`
 	CustomTools AgentCustomToolsConfig     `mapstructure:"custom_tools"`
 	Shell       AgentShellConfig           `mapstructure:"shell"`
+	Skills      AgentSkillsConfig          `mapstructure:"skills"`
 }
 
 // AgentShellConfig configures the agent's restricted shell tool.
@@ -170,6 +171,18 @@ type AgentShellDockerFallbackConfig struct {
 	Image string `mapstructure:"image"`
 	// Network controls the container's network: "on" (default) or "off".
 	Network string `mapstructure:"network"`
+}
+
+// AgentSkillsConfig controls bundled and on-disk skill discovery.
+type AgentSkillsConfig struct {
+	// Enabled toggles skill discovery and activation. Defaults to true.
+	Enabled bool `mapstructure:"enabled"`
+	// UserDir is the per-user skills directory. Defaults to ~/.nalvin/skills.
+	UserDir string `mapstructure:"user_dir"`
+	// WorkspaceDir overrides the workspace-local skills directory. Defaults to <workspace>/.nalvin/skills.
+	WorkspaceDir string `mapstructure:"workspace_dir"`
+	// DefaultActive lists skill names to activate at run start regardless of activation: system flag.
+	DefaultActive []string `mapstructure:"default_active"`
 }
 
 type AgentSubagentsConfig struct {
@@ -696,6 +709,14 @@ func loadAgentConfig(v *viper.Viper) AgentConfig {
 	if cfg.CustomTools.TimeoutSeconds <= 0 {
 		cfg.CustomTools.TimeoutSeconds = 30
 	}
+
+	// Skills defaults.
+	if !cfg.Skills.Enabled && !v.IsSet("agent.skills.enabled") {
+		cfg.Skills.Enabled = true
+	}
+	cfg.Skills.UserDir = strings.TrimSpace(cfg.Skills.UserDir)
+	cfg.Skills.WorkspaceDir = strings.TrimSpace(cfg.Skills.WorkspaceDir)
+	cfg.Skills.DefaultActive = trimValues(cfg.Skills.DefaultActive)
 
 	// Compaction defaults.
 	if !cfg.Compaction.Enabled && !v.IsSet("agent.compaction.enabled") {
